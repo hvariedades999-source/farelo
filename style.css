@@ -142,3 +142,4 @@ select { max-width: 100%; text-overflow: ellipsis; }
 .infobox .tip { color: var(--accent); }
 .fxh .icon.sm { min-width: 34px; }
 .fxh b { white-space: normal; line-height: 1.2; }
+[hidden] { display: none !important; }
