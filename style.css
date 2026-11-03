@@ -132,3 +132,13 @@ details .row { margin-top: 8px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 #app, section, .fx, .exp, .btns { grid-template-columns: minmax(0, 1fr); }
 select { max-width: 100%; text-overflow: ellipsis; }
+.info { font-family: Georgia, serif; font-style: italic; font-weight: 700; }
+.info.is { background: var(--accent); color: #1a1205; }
+.infobox { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: .88rem; display: grid; gap: 8px; }
+.infobox p { margin: 0; }
+.infobox dl { margin: 0; display: grid; gap: 4px; }
+.infobox dt { font-weight: 700; }
+.infobox dd { margin: 0 0 4px; color: var(--muted); }
+.infobox .tip { color: var(--accent); }
+.fxh .icon.sm { min-width: 34px; }
+.fxh b { white-space: normal; line-height: 1.2; }

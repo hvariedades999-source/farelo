@@ -12,26 +12,128 @@ export function newBuf(ch, len, rate) {
   return new AudioBuffer({ numberOfChannels: Math.max(1, ch), length: Math.max(1, len | 0), sampleRate: rate });
 }
 
-const PCT = (label, def) => ({ label, min: 0, max: 100, def, step: 1, unit: '%' });
-const MIX = (def) => PCT('Mix', def);
-const HZ = (label, min, max, def) => ({ label, min, max, def, step: 1, unit: 'Hz', log: 1 });
+const PCT = (label, def, hint) => ({ label, min: 0, max: 100, def, step: 1, unit: '%', hint });
+const MIX = (def) => PCT('Mix', def, 'Quanto do som com efeito entra no resultado. 100% é só o efeito; valores menores misturam com o som original.');
+const HZ = (label, min, max, def, hint) => ({ label, min, max, def, step: 1, unit: 'Hz', log: 1, hint });
+const Q = (label, def, hint) => ({ label, min: 0.1, max: 20, def, step: 0.1, unit: '', hint });
 
 export const FX = {
-  gain:     { label: 'Volume', params: { db: { label: 'Ganho', min: -24, max: 24, def: 0, step: 0.5, unit: 'dB' } } },
-  pitch:    { label: 'Pitch (mantém duração)', params: { semi: { label: 'Tom', min: -24, max: 24, def: -5, step: 0.5, unit: 'st' } } },
-  speed:    { label: 'Velocidade (mantém tom)', params: { rate: { label: 'Velocidade', min: 0.25, max: 4, def: 1.5, step: 0.05, unit: 'x' } } },
-  tape:     { label: 'Fita (tom + velocidade)', params: { rate: { label: 'Rotação', min: 0.25, max: 4, def: 0.7, step: 0.05, unit: 'x' } } },
-  dist:     { label: 'Distorção', params: { drive: PCT('Drive', 50), tone: HZ('Tom', 500, 16000, 6000), mix: MIX(100) } },
-  crush:    { label: 'Bitcrusher 8-bit', params: { bits: { label: 'Bits', min: 1, max: 16, def: 6, step: 1, unit: '' }, down: { label: 'Redução', min: 1, max: 40, def: 6, step: 1, unit: 'x' }, mix: MIX(100) } },
-  lowpass:  { label: 'Passa-baixa (abafar)', params: { freq: HZ('Corte', 40, 20000, 1500), q: { label: 'Ressonância', min: 0.1, max: 20, def: 0.7, step: 0.1, unit: '' } } },
-  highpass: { label: 'Passa-alta (tirar grave)', params: { freq: HZ('Corte', 20, 12000, 800), q: { label: 'Ressonância', min: 0.1, max: 20, def: 0.7, step: 0.1, unit: '' } } },
-  bandpass: { label: 'Passa-banda', params: { freq: HZ('Centro', 60, 12000, 1000), q: { label: 'Largura', min: 0.1, max: 20, def: 2, step: 0.1, unit: '' } } },
-  echo:     { label: 'Eco', params: { time: { label: 'Tempo', min: 10, max: 1500, def: 250, step: 5, unit: 'ms' }, fb: { label: 'Repetições', min: 0, max: 90, def: 40, step: 1, unit: '%' }, mix: MIX(40) } },
-  reverb:   { label: 'Reverb', params: { size: { label: 'Tamanho', min: 0.1, max: 8, def: 2, step: 0.1, unit: 's' }, decay: { label: 'Decaimento', min: 1, max: 10, def: 3, step: 0.1, unit: '' }, mix: MIX(35) } },
-  robot:    { label: 'Robô', params: { freq: HZ('Frequência', 10, 1000, 50), mix: MIX(100) } },
-  radio:    { label: 'Rádio / telefone', params: { low: HZ('Corta grave em', 100, 1500, 400), high: HZ('Corta agudo em', 1500, 8000, 3000), drive: PCT('Saturação', 30), noise: PCT('Chiado', 10) } },
-  tremolo:  { label: 'Tremolo', params: { rate: { label: 'Velocidade', min: 0.5, max: 30, def: 6, step: 0.1, unit: 'Hz' }, depth: PCT('Profundidade', 70) } },
-  chorus:   { label: 'Chorus', params: { rate: { label: 'Velocidade', min: 0.1, max: 5, def: 1.2, step: 0.1, unit: 'Hz' }, depth: PCT('Profundidade', 40), mix: MIX(50) } },
+  denoise: {
+    label: 'Redução de ruído',
+    info: 'Remove chiado e barulho constante do ambiente (ventilador, ar-condicionado, trânsito ao fundo). Ele procura os trechos mais silenciosos da gravação, aprende como é o ruído ali e tira esse ruído do som inteiro.',
+    tip: 'Funciona melhor quando a gravação tem meio segundo de silêncio no começo ou no fim. Coloque este efeito primeiro na lista. Exagerar deixa o som metálico ou "aquoso".',
+    params: {
+      amount: PCT('Força', 80, 'Quanto do ruído é removido. Comece em 60–80% e suba se ainda ouvir chiado.'),
+      sens: { label: 'Sensibilidade', min: 1, max: 4, def: 1.5, step: 0.1, unit: 'x', hint: 'Quanto acima do ruído aprendido um som precisa estar para ser preservado. Valores altos limpam mais, mas podem comer partes baixas do som.' },
+    },
+  },
+  gate: {
+    label: 'Noise gate',
+    info: 'Silencia os momentos em que o som está abaixo de um volume mínimo. Ótimo para limpar os espaços entre palavras ou o barulho antes e depois de um efeito sonoro.',
+    tip: 'Use junto com a Redução de ruído: ela limpa o ruído por baixo do som, e o gate deixa os silêncios totalmente limpos.',
+    params: {
+      thr: { label: 'Limiar', min: -80, max: -5, def: -40, step: 1, unit: 'dB', hint: 'Abaixo deste volume o som é silenciado. Suba até o ruído sumir, sem cortar o começo ou o fim do som.' },
+      range: { label: 'Redução', min: 6, max: 80, def: 60, step: 1, unit: 'dB', hint: 'Quanto o volume cai quando o gate fecha. 80 dB é silêncio total; valores menores deixam um pouco do ambiente, soando mais natural.' },
+      rel: { label: 'Liberação', min: 10, max: 1000, def: 150, step: 5, unit: 'ms', hint: 'Quanto tempo o gate leva para fechar depois que o som cai. Valores curtos cortam caudas de reverb; longos são mais suaves.' },
+    },
+  },
+  gain: {
+    label: 'Volume',
+    info: 'Aumenta ou diminui o volume do som neste ponto da lista.',
+    params: { db: { label: 'Ganho', min: -24, max: 24, def: 0, step: 0.5, unit: 'dB', hint: '+6 dB dobra a sensação de volume; -6 dB reduz pela metade. Cuidado com valores altos, que podem estourar.' } },
+  },
+  pitch: {
+    label: 'Pitch (mantém duração)',
+    info: 'Deixa o som mais grave ou mais agudo sem mudar a duração. Bom para vozes de monstro, criança ou criatura.',
+    params: { semi: { label: 'Tom', min: -24, max: 24, def: -5, step: 0.5, unit: 'st', hint: 'Em semitons. 12 é uma oitava. Negativo deixa grave (monstro); positivo deixa agudo (esquilo).' } },
+  },
+  speed: {
+    label: 'Velocidade (mantém tom)',
+    info: 'Acelera ou desacelera o som sem mudar se ele é grave ou agudo.',
+    params: { rate: { label: 'Velocidade', min: 0.25, max: 4, def: 1.5, step: 0.05, unit: 'x', hint: '1x é o original. 2x dura metade do tempo; 0,5x dura o dobro.' } },
+  },
+  tape: {
+    label: 'Fita (tom + velocidade)',
+    info: 'Muda velocidade e tom juntos, como tocar uma fita ou disco mais rápido ou mais devagar. Mais lento fica grave e arrastado; mais rápido fica agudo e acelerado.',
+    params: { rate: { label: 'Rotação', min: 0.25, max: 4, def: 0.7, step: 0.05, unit: 'x', hint: 'Abaixo de 1x: grave e lento, bom para gigantes e máquinas pesadas. Acima: agudo e rápido.' } },
+  },
+  dist: {
+    label: 'Distorção',
+    info: 'Satura o som até ele "rasgar", deixando mais agressivo e sujo. Bom para explosões, motores, golpes e vozes de vilão.',
+    params: {
+      drive: PCT('Drive', 50, 'Intensidade da distorção. Valores baixos aquecem; altos deixam o som estourado.'),
+      tone: HZ('Tom', 500, 16000, 6000, 'Corta os agudos depois da distorção. Mais baixo fica abafado e pesado; mais alto fica áspero.'),
+      mix: MIX(100),
+    },
+  },
+  crush: {
+    label: 'Bitcrusher 8-bit',
+    info: 'Reduz a qualidade digital do som de propósito, imitando videogames antigos e aparelhos digitais baratos.',
+    params: {
+      bits: { label: 'Bits', min: 1, max: 16, def: 6, step: 1, unit: '', hint: 'Menos bits deixa o som mais áspero e granulado. 8 lembra consoles antigos; 2–4 é bem destruído.' },
+      down: { label: 'Redução', min: 1, max: 40, def: 6, step: 1, unit: 'x', hint: 'Diminui a taxa de amostragem. Valores altos deixam o som metálico e "robótico".' },
+      mix: MIX(100),
+    },
+  },
+  lowpass: {
+    label: 'Passa-baixa (abafar)',
+    info: 'Deixa passar só os graves e corta os agudos. O som fica abafado, como ouvido através de uma parede, debaixo d’água ou de longe.',
+    params: { freq: HZ('Corte', 40, 20000, 1500, 'Acima desta frequência o som é cortado. Quanto mais baixo, mais abafado.'), q: Q('Ressonância', 0.7, 'Realça a região do corte. Valores altos criam um "assobio" na frequência de corte.') },
+  },
+  highpass: {
+    label: 'Passa-alta (tirar grave)',
+    info: 'Deixa passar só os agudos e corta os graves. Limpa ronco, vento e batidas no microfone, ou deixa o som fino.',
+    tip: 'Um corte em torno de 80–120 Hz limpa vozes sem deixá-las finas.',
+    params: { freq: HZ('Corte', 20, 12000, 800, 'Abaixo desta frequência o som é cortado. Quanto mais alto, mais fino.'), q: Q('Ressonância', 0.7, 'Realça a região do corte.') },
+  },
+  bandpass: {
+    label: 'Passa-banda',
+    info: 'Deixa passar só uma faixa de frequências e corta o resto, isolando uma "fatia" do som.',
+    params: { freq: HZ('Centro', 60, 12000, 1000, 'O meio da faixa que continua soando.'), q: Q('Largura', 2, 'Valores altos deixam a faixa mais estreita e o efeito mais forte.') },
+  },
+  echo: {
+    label: 'Eco',
+    info: 'Repete o som várias vezes, cada vez mais baixo, como em uma caverna ou um vale.',
+    params: {
+      time: { label: 'Tempo', min: 10, max: 1500, def: 250, step: 5, unit: 'ms', hint: 'Intervalo entre as repetições. Curto soa metálico; longo soa como um vale.' },
+      fb: { label: 'Repetições', min: 0, max: 90, def: 40, step: 1, unit: '%', hint: 'Quanto cada repetição volta. Valores altos fazem o eco durar muito.' },
+      mix: MIX(40),
+    },
+  },
+  reverb: {
+    label: 'Reverb',
+    info: 'Simula o som dentro de um ambiente: sala, salão, catedral. Dá sensação de espaço e distância.',
+    params: {
+      size: { label: 'Tamanho', min: 0.1, max: 8, def: 2, step: 0.1, unit: 's', hint: 'Duração da cauda. 0,5 s é uma sala; 3 s um salão; 6 s ou mais, uma catedral.' },
+      decay: { label: 'Decaimento', min: 1, max: 10, def: 3, step: 0.1, unit: '', hint: 'Quão rápido a cauda some. Valores altos somem rápido; baixos ficam longos e densos.' },
+      mix: MIX(35),
+    },
+  },
+  robot: {
+    label: 'Robô',
+    info: 'Multiplica o som por um tom eletrônico (ring modulator), criando vozes metálicas de robô, alien ou rádio quebrado.',
+    params: { freq: HZ('Frequência', 10, 1000, 50, 'Abaixo de ~30 Hz soa como um tremor; 50–150 Hz é robô clássico; acima disso fica alienígena.'), mix: MIX(100) },
+  },
+  radio: {
+    label: 'Rádio / telefone',
+    info: 'Imita o som saindo de um rádio, walkie-talkie ou telefone: sem graves, sem agudos, um pouco saturado e com chiado.',
+    params: {
+      low: HZ('Corta grave em', 100, 1500, 400, 'Tudo abaixo desta frequência some. Mais alto soa mais "de telefone".'),
+      high: HZ('Corta agudo em', 1500, 8000, 3000, 'Tudo acima desta frequência some. Mais baixo soa mais velho e abafado.'),
+      drive: PCT('Saturação', 30, 'Sujeira do alto-falante pequeno.'),
+      noise: PCT('Chiado', 10, 'Ruído de fundo de transmissão.'),
+    },
+  },
+  tremolo: {
+    label: 'Tremolo',
+    info: 'Faz o volume subir e descer repetidamente, criando um som pulsante ou vibrante.',
+    params: { rate: { label: 'Velocidade', min: 0.5, max: 30, def: 6, step: 0.1, unit: 'Hz', hint: 'Pulsos por segundo. Rápido soa como asas de inseto ou motor.' }, depth: PCT('Profundidade', 70, 'Quanto o volume cai em cada pulso.') },
+  },
+  chorus: {
+    label: 'Chorus',
+    info: 'Soma cópias do som levemente desafinadas e atrasadas, deixando ele mais largo, brilhante e "etéreo", como várias vozes juntas.',
+    params: { rate: { label: 'Velocidade', min: 0.1, max: 5, def: 1.2, step: 0.1, unit: 'Hz', hint: 'Quão rápido a desafinação oscila.' }, depth: PCT('Profundidade', 40, 'Quanto as cópias desafinam.'), mix: MIX(50) },
+  },
 };
 
 export function defaultParams(type) {
@@ -139,8 +241,96 @@ function biquad(type) {
   });
 }
 
+
+// FFT radix-2 in-place
+function fft(re, im, inv) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const a = (inv ? 2 : -2) * Math.PI / len, wr = Math.cos(a), wi = Math.sin(a);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const u = i + k, v = u + len / 2;
+        const tr = re[v] * cr - im[v] * ci, ti = re[v] * ci + im[v] * cr;
+        re[v] = re[u] - tr; im[v] = im[u] - ti; re[u] += tr; im[u] += ti;
+        const nr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = nr;
+      }
+    }
+  }
+  if (inv) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+
+// Redução de ruído espectral: aprende o ruído nos trechos mais silenciosos.
+function denoise(x, p) {
+  const N = 2048, H = 512, B = N / 2 + 1;
+  const w = new Float32Array(N);
+  for (let i = 0; i < N; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+  const pad = new Float32Array(x.length + 2 * N);
+  pad.set(x, N);
+  const F = Math.floor((pad.length - N) / H) + 1;
+  const mags = [], phs = [], energy = new Float32Array(F);
+  const re = new Float64Array(N), im = new Float64Array(N);
+  for (let f = 0; f < F; f++) {
+    const o = f * H;
+    for (let i = 0; i < N; i++) { re[i] = pad[o + i] * w[i]; im[i] = 0; }
+    fft(re, im, false);
+    const m = new Float32Array(B), ph = new Float32Array(B);
+    let e = 0;
+    for (let k = 0; k < B; k++) { m[k] = Math.hypot(re[k], im[k]); ph[k] = Math.atan2(im[k], re[k]); e += m[k] * m[k]; }
+    mags.push(m); phs.push(ph); energy[f] = e;
+  }
+  // perfil de ruído: média dos 15% de quadros mais silenciosos (ignorando silêncio digital do preenchimento)
+  const order = [...energy.keys()].filter((f) => energy[f] > 1e-12).sort((a, b) => energy[a] - energy[b]);
+  const take = order.slice(0, Math.max(1, Math.floor(order.length * 0.15)));
+  const noise = new Float32Array(B);
+  for (const f of take) for (let k = 0; k < B; k++) noise[k] += mags[f][k] / take.length;
+  const floor = 1 - p.amount / 100, k2 = p.sens;
+  const y = new Float32Array(pad.length), prev = new Float32Array(B).fill(1);
+  for (let f = 0; f < F; f++) {
+    const m = mags[f], ph = phs[f];
+    for (let k = 0; k < B; k++) {
+      let g = m[k] > 0 ? 1 - k2 * noise[k] / m[k] : 0;
+      g = Math.max(floor, Math.min(1, g));
+      g = 0.5 * g + 0.5 * prev[k];
+      prev[k] = g;
+      const a = m[k] * g;
+      re[k] = a * Math.cos(ph[k]); im[k] = a * Math.sin(ph[k]);
+      if (k > 0 && k < N / 2) { re[N - k] = re[k]; im[N - k] = -im[k]; }
+    }
+    fft(re, im, true);
+    const o = f * H;
+    for (let i = 0; i < N; i++) y[o + i] += re[i] * w[i] / 1.5;
+  }
+  return y.slice(N, N + x.length);
+}
+
+function gate(x, p, rate) {
+  const thr = Math.pow(10, p.thr / 20), low = Math.pow(10, -p.range / 20);
+  const atk = Math.exp(-1 / (0.002 * rate)), rel = Math.exp(-1 / (p.rel / 1000 * rate)), envRel = Math.exp(-1 / (0.02 * rate));
+  const hold = Math.floor(0.02 * rate);
+  const y = new Float32Array(x.length);
+  let env = 0, g = low, h = 0;
+  for (let i = 0; i < x.length; i++) {
+    const a = Math.abs(x[i]);
+    env = a > env ? a : env * envRel;
+    let target;
+    if (env >= thr) { target = 1; h = hold; } else if (h > 0) { target = 1; h--; } else target = low;
+    g = target > g ? target + (g - target) * atk : target + (g - target) * rel;
+    y[i] = x[i] * g;
+  }
+  return y;
+}
+
 // ---------- efeitos ----------
 const PROC = {
+  denoise: (b, p) => mapCh(b, (x) => denoise(x, p)),
+  gate: (b, p) => mapCh(b, (x) => gate(x, p, b.sampleRate)),
   gain: (b, p) => { const g = Math.pow(10, p.db / 20); return mapCh(b, (x) => x.map((v) => v * g)); },
   pitch: (b, p) => { const r = Math.pow(2, p.semi / 12); return mapCh(b, (x) => resample(stretch(x, r), r)); },
   speed: (b, p) => mapCh(b, (x) => stretch(x, 1 / p.rate)),

@@ -237,6 +237,8 @@ async function openRecorder() {
     <div class="timer" id="rt">0.0 s</div>
     <button class="recbtn" id="rb" aria-label="Gravar"><span></span></button>
     <p class="msg" id="rm">Toque no botão para começar.</p>
+    <label class="check"><input type="checkbox" id="rns" ${localStorage.getItem('ns') === '1' ? 'checked' : ''}> Filtro de ruído do celular</label>
+    <p class="hint">Bom para vozes em lugar barulhento. Para efeitos sonoros, deixe desligado: o filtro pode cortar o próprio som.</p>
     <button class="ghost" id="rc">Cancelar</button></div>`;
   document.body.appendChild(ov);
   let stream, rec, ac, raf, chunks = [], t0, cancelled = false;
@@ -245,7 +247,10 @@ async function openRecorder() {
   $('#rb', ov).onclick = async () => {
     if (rec?.state === 'recording') { rec.stop(); return; }
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      const ns = $('#rns', ov).checked;
+      try { localStorage.setItem('ns', ns ? '1' : '0'); } catch {}
+      $('#rns', ov).disabled = true;
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: ns, autoGainControl: false } });
     } catch (e) {
       $('#rm', ov).textContent = e.name === 'NotAllowedError'
         ? 'Microfone bloqueado. Toque no ícone ao lado do endereço do site → Permissões → Microfone → Permitir, e tente de novo.'
@@ -406,16 +411,19 @@ async function editor(clip) {
         <div class="fxh">
           <label class="sw"><input type="checkbox" class="on" ${fx.on ? 'checked' : ''} aria-label="Ligar ${def.label}"><span></span></label>
           <b>${def.label}</b>
+          <button class="icon sm info" aria-label="Sobre ${def.label}" aria-expanded="false">i</button>
           <button class="icon sm up" aria-label="Subir" ${i === 0 ? 'disabled' : ''}>↑</button>
           <button class="icon sm dn" aria-label="Descer" ${i === clip.chain.length - 1 ? 'disabled' : ''}>↓</button>
           <button class="icon sm rm" aria-label="Remover">✕</button>
         </div>
+        <div class="infobox" hidden><p>${def.info}</p><dl>${Object.values(def.params).map((p) => `<dt>${p.label}</dt><dd>${p.hint || ''}</dd>`).join('')}</dl>${def.tip ? `<p class="tip">${def.tip}</p>` : ''}</div>
         ${Object.entries(def.params).map(([k, p]) => `<label class="prm"><span>${p.label}</span><input type="range" data-k="${k}" min="${p.log ? 0 : p.min}" max="${p.log ? 1000 : p.max}" step="${p.log ? 1 : p.step}" value="${toSlider(p, fx.params[k])}"><output>${show(p, fx.params[k])}</output></label>`).join('')}
       </div>`;
     }).join('');
     $$('.fx', el).forEach((card) => {
       const i = +card.dataset.i, fx = clip.chain[i], def = D.FX[fx.type];
       $('.on', card).onchange = (ev) => { fx.on = ev.target.checked; card.classList.toggle('off', !fx.on); dirty(); };
+      $('.info', card).onclick = (ev) => { const box = $('.infobox', card); box.hidden = !box.hidden; ev.currentTarget.setAttribute('aria-expanded', !box.hidden); ev.currentTarget.classList.toggle('is', !box.hidden); };
       $('.up', card).onclick = () => { [clip.chain[i - 1], clip.chain[i]] = [clip.chain[i], clip.chain[i - 1]]; drawChain(); dirty(); };
       $('.dn', card).onclick = () => { [clip.chain[i + 1], clip.chain[i]] = [clip.chain[i], clip.chain[i + 1]]; drawChain(); dirty(); };
       $('.rm', card).onclick = () => { clip.chain.splice(i, 1); drawChain(); dirty(); };
