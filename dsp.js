@@ -751,3 +751,117 @@ export async function encodeOgg(b, quality = 0.6) {
   for (let i = 0; i < b.length; i += step) enc.encode(chans.map((d) => d.subarray(i, i + step)));
   return enc.finish('audio/ogg');
 }
+
+// ---------- edição de trechos (não destrutiva: lista de operações) ----------
+function sliceBuf(b, a, z) {
+  a = Math.max(0, Math.min(b.length, a)); z = Math.max(a, Math.min(b.length, z));
+  const o = newBuf(b.numberOfChannels, Math.max(1, z - a), b.sampleRate);
+  for (let c = 0; c < b.numberOfChannels; c++) o.copyToChannel(b.getChannelData(c).subarray(a, Math.max(a + 1, z)), c);
+  return o;
+}
+function concatParts(rate, ch, parts) {
+  const len = parts.reduce((s, p) => s + p[0].length, 0);
+  const o = newBuf(ch, Math.max(1, len), rate);
+  for (let c = 0; c < ch; c++) {
+    const d = o.getChannelData(c);
+    let off = 0;
+    for (const p of parts) { d.set(p[Math.min(c, p.length - 1)], off); off += p[0].length; }
+  }
+  return o;
+}
+const chans = (b, a = 0, z = b.length) => Array.from({ length: b.numberOfChannels }, (_, c) => b.getChannelData(c).slice(Math.max(0, a), Math.max(0, Math.min(b.length, z))));
+
+function opDelete(b, a, z) {
+  const cf = Math.min(Math.round(b.sampleRate * 0.004), a, b.length - z);
+  const pre = chans(b, 0, a - cf), post = chans(b, z + cf), mid = chans(b, a - cf, a).map((d, c) => {
+    const nx = b.getChannelData(c);
+    for (let i = 0; i < cf; i++) { const f = i / cf; d[i] = d[i] * (1 - f) + nx[z + i] * f; }
+    return d;
+  });
+  return concatParts(b.sampleRate, b.numberOfChannels, [pre, mid, post]);
+}
+function opSilence(b, a, z) {
+  const cf = Math.round(b.sampleRate * 0.004);
+  return mapCh(b, (x) => {
+    const y = x.slice();
+    for (let i = a; i < z; i++) {
+      const g = Math.max(0, 1 - Math.min(i - a, z - 1 - i) / cf);
+      y[i] = (i - a < cf || z - 1 - i < cf) ? x[i] * g : 0;
+    }
+    return y;
+  });
+}
+function opInsert(b, at, src) {
+  const cf = Math.round(b.sampleRate * 0.003);
+  const ins = chans(src).map((d) => { const n = d.length; for (let i = 0; i < Math.min(cf, n); i++) { d[i] *= i / cf; d[n - 1 - i] *= i / cf; } return d; });
+  while (ins.length < b.numberOfChannels) ins.push(ins[0]);
+  return concatParts(b.sampleRate, b.numberOfChannels, [chans(b, 0, at), ins.slice(0, b.numberOfChannels), chans(b, at)]);
+}
+const TIME_FX = new Set(['speed', 'tape']);
+async function opFx(b, a, z, chain) {
+  const part = sliceBuf(b, a, z);
+  let pr = part;
+  for (const fx of chain) if (fx.on !== false && PROC[fx.type]) pr = await PROC[fx.type](pr, fx.params);
+  const keepLen = !chain.some((f) => TIME_FX.has(f.type));
+  const len = keepLen ? part.length : pr.length, cf = Math.min(Math.round(b.sampleRate * 0.005), len >> 2);
+  const mid = Array.from({ length: b.numberOfChannels }, (_, c) => {
+    const p = pr.getChannelData(Math.min(c, pr.numberOfChannels - 1)), o = part.getChannelData(c), y = new Float32Array(len);
+    for (let i = 0; i < len; i++) y[i] = p[i] || 0;
+    for (let i = 0; i < cf; i++) { const f = i / cf; y[i] = o[i] * (1 - f) + y[i] * f; const j = len - 1 - i, oj = o[Math.min(o.length - 1, o.length - 1 - i)]; y[j] = oj * (1 - f) + y[j] * f; }
+    return y;
+  });
+  return concatParts(b.sampleRate, b.numberOfChannels, [chans(b, 0, a), mid, chans(b, z)]);
+}
+// Reparo espectral: reduz o que está dentro do retângulo tempo × frequência ao nível do entorno.
+function specRepairCh(x, rate, a, z, f0, f1) {
+  const N = 2048, H = 512, B = N / 2 + 1;
+  const s0 = Math.max(0, a - 2 * N), s1 = Math.min(x.length, z + 2 * N), seg = x.subarray(s0, s1);
+  const w = new Float32Array(N); for (let i = 0; i < N; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+  const padded = new Float32Array(seg.length + 2 * N); padded.set(seg, N);
+  const F = Math.floor((padded.length - N) / H) + 1, re = new Float64Array(N), im = new Float64Array(N);
+  const mags = [], phs = [];
+  for (let f = 0; f < F; f++) {
+    for (let i = 0; i < N; i++) { re[i] = padded[f * H + i] * w[i]; im[i] = 0; }
+    fft(re, im, false);
+    const m = new Float32Array(B), p = new Float32Array(B);
+    for (let k = 0; k < B; k++) { m[k] = Math.hypot(re[k], im[k]); p[k] = Math.atan2(im[k], re[k]); }
+    mags.push(m); phs.push(p);
+  }
+  const k0 = Math.max(0, Math.floor(f0 / rate * N)), k1 = Math.min(B - 1, Math.ceil(f1 / rate * N));
+  const center = (f) => s0 + f * H + N / 2 - N;
+  const inside = [], before = [], after = [];
+  for (let f = 0; f < F; f++) { const c = center(f); if (c >= a && c <= z) inside.push(f); else if (c < a && c > a - N * 1.5) before.push(f); else if (c > z && c < z + N * 1.5) after.push(f); }
+  const ref = new Float32Array(B), refs = [...before, ...after];
+  for (let k = k0; k <= k1; k++) { let s = 0; for (const f of refs) s += mags[f][k]; ref[k] = refs.length ? s / refs.length : 0; }
+  for (const f of inside) for (let k = k0; k <= k1; k++) if (mags[f][k] > ref[k]) mags[f][k] = ref[k];
+  const y = new Float32Array(padded.length);
+  for (let f = 0; f < F; f++) {
+    for (let k = 0; k < B; k++) { re[k] = mags[f][k] * Math.cos(phs[f][k]); im[k] = mags[f][k] * Math.sin(phs[f][k]); if (k > 0 && k < N / 2) { re[N - k] = re[k]; im[N - k] = -im[k]; } }
+    fft(re, im, true);
+    for (let i = 0; i < N; i++) y[f * H + i] += re[i] * w[i] / 1.5;
+  }
+  const outX = x.slice(), lo = Math.max(s0 + N, a - N), hi = Math.min(s1 - N, z + N);
+  for (let i = lo; i < hi; i++) outX[i] = y[i - s0 + N];
+  return outX;
+}
+
+const opsCache = new WeakMap();
+export async function applyOps(orig, ops) {
+  if (!ops || !ops.length) return orig;
+  const key = JSON.stringify(ops), hit = opsCache.get(orig);
+  if (hit && hit.has(key)) return hit.get(key);
+  const states = [orig];
+  let b = orig;
+  for (const op of ops) {
+    const r = b.sampleRate, A = Math.round((op.a || 0) * r), Z = Math.round((op.b || 0) * r);
+    if (op.type === 'delete') b = opDelete(b, A, Z);
+    else if (op.type === 'silence') b = opSilence(b, A, Z);
+    else if (op.type === 'paste') { const s = states[Math.min(op.src.k, states.length - 1)]; b = opInsert(b, Math.round(op.at * r), sliceBuf(s, Math.round(op.src.a * r), Math.round(op.src.b * r))); }
+    else if (op.type === 'fx') b = await opFx(b, A, Z, op.chain);
+    else if (op.type === 'spec') b = mapCh(b, (x) => specRepairCh(x, r, A, Z, op.f0, op.f1));
+    states.push(b);
+  }
+  if (!opsCache.has(orig)) opsCache.set(orig, new Map());
+  const m = opsCache.get(orig); if (m.size > 30) m.clear(); m.set(key, b);
+  return b;
+}

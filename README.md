@@ -10,6 +10,10 @@ Abrir: https://hvariedades999-source.github.io/sfx-studio/
 - Dividir gravação pelos silêncios e gerar variações para o jogo
 - Mixagens em camadas com efeitos por camada e limitador no master
 - Exportação WAV (com loop para o Godot), OGG e MP3 para WhatsApp, em lote, com volume padronizado (LUFS)
+- Interface com onda fixa, abas, gavetas de efeito com A/B, tema claro e escuro
+- Edição de trechos (recortar, copiar, colar, silenciar, efeito no trecho) e reparo no espectrograma
+- Gerador de sons retrô estilo sfxr
+- Pacote Godot (.tres AudioStreamRandomizer), preset em lote, mixagem com grade, cortes, fades e gravação de camada
 - Backup e restauração da biblioteca, funciona sem internet
 
 Bibliotecas incluídas em `vendor/`: lamejs (LGPL, MP3) e ogg-vorbis-encoder-js (BSD/MIT, OGG Vorbis).
