@@ -134,6 +134,41 @@ export const FX = {
     info: 'Soma cópias do som levemente desafinadas e atrasadas, deixando ele mais largo, brilhante e "etéreo", como várias vozes juntas.',
     params: { rate: { label: 'Velocidade', min: 0.1, max: 5, def: 1.2, step: 0.1, unit: 'Hz', hint: 'Quão rápido a desafinação oscila.' }, depth: PCT('Profundidade', 40, 'Quanto as cópias desafinam.'), mix: MIX(50) },
   },
+  comp: {
+    label: 'Compressor',
+    info: 'Diminui a diferença entre as partes altas e baixas do som. O resultado fica mais encorpado, presente e "na cara", como em filmes e jogos.',
+    tip: 'Para voz: limiar -24 dB, proporção 4:1. Para impactos: ataque um pouco maior (20 ms) mantém o estalo inicial.',
+    params: {
+      thr: { label: 'Limiar', min: -60, max: 0, def: -24, step: 1, unit: 'dB', hint: 'A partir deste volume o compressor começa a agir. Mais baixo comprime mais o som.' },
+      ratio: { label: 'Proporção', min: 1, max: 20, def: 4, step: 0.5, unit: ':1', hint: 'Quanto o volume acima do limiar é reduzido. 2:1 é suave; 10:1 ou mais é quase um limitador.' },
+      atk: { label: 'Ataque', min: 0, max: 200, def: 10, step: 1, unit: 'ms', hint: 'Quão rápido o compressor reage. Curto segura picos; longo deixa passar o estalo inicial.' },
+      rel: { label: 'Liberação', min: 10, max: 1000, def: 150, step: 5, unit: 'ms', hint: 'Quão rápido ele solta depois que o som baixa.' },
+      makeup: { label: 'Ganho final', min: 0, max: 24, def: 6, step: 0.5, unit: 'dB', hint: 'Recupera o volume perdido com a compressão.' },
+    },
+  },
+  limiter: {
+    label: 'Limitador',
+    info: 'Impede que o som passe de um volume máximo, segurando os picos sem distorcer. Deixa o som mais alto e seguro contra estouros.',
+    tip: 'Coloque no fim da lista. Junto com o Volume antes dele, serve para deixar o som bem alto sem estourar.',
+    params: {
+      ceil: { label: 'Teto', min: -12, max: 0, def: -1, step: 0.1, unit: 'dB', hint: 'Volume máximo que o som pode atingir. -1 dB é o padrão seguro.' },
+      rel: { label: 'Liberação', min: 5, max: 500, def: 60, step: 1, unit: 'ms', hint: 'Quão rápido o volume volta depois de um pico. Curto soa mais alto; longo, mais natural.' },
+    },
+  },
+  eq: {
+    label: 'Equalizador',
+    info: 'Aumenta ou diminui regiões do som: graves, médios e agudos. Serve para dar peso, tirar som "embolado", deixar mais claro ou mais escuro.',
+    tip: 'Corte em vez de aumentar quando puder: tirar médios-graves (300 Hz) limpa; tirar agudos acalma chiado.',
+    params: {
+      low: { label: 'Graves', min: -18, max: 18, def: 0, step: 0.5, unit: 'dB', hint: 'Abaixo de 120 Hz: peso, impacto e ronco.' },
+      f1: HZ('Freq. médio-grave', 100, 2000, 400, 'Centro da faixa de médios-graves.'),
+      g1: { label: 'Médio-grave', min: -18, max: 18, def: 0, step: 0.5, unit: 'dB', hint: 'Corpo do som. Em excesso deixa embolado; reduzir limpa.' },
+      f2: HZ('Freq. médio-agudo', 1000, 10000, 3000, 'Centro da faixa de médios-agudos.'),
+      g2: { label: 'Médio-agudo', min: -18, max: 18, def: 0, step: 0.5, unit: 'dB', hint: 'Presença e clareza. Aumentar destaca vozes; em excesso fica estridente.' },
+      high: { label: 'Agudos', min: -18, max: 18, def: 0, step: 0.5, unit: 'dB', hint: 'Acima de 8 kHz: brilho e ar. Reduzir esconde chiado.' },
+      q: Q('Largura dos médios', 1, 'Valores altos afetam uma faixa estreita; baixos, uma faixa larga.'),
+    },
+  },
 };
 
 export function defaultParams(type) {
@@ -243,7 +278,7 @@ function biquad(type) {
 
 
 // FFT radix-2 in-place
-function fft(re, im, inv) {
+export function fft(re, im, inv) {
   const n = re.length;
   for (let i = 1, j = 0; i < n; i++) {
     let bit = n >> 1;
@@ -331,6 +366,21 @@ function gate(x, p, rate) {
 const PROC = {
   denoise: (b, p) => mapCh(b, (x) => denoise(x, p)),
   gate: (b, p) => mapCh(b, (x) => gate(x, p, b.sampleRate)),
+  comp: (b, p) => graph(b, 0, (c, src) => {
+    const k = c.createDynamicsCompressor();
+    k.threshold.value = p.thr; k.ratio.value = p.ratio; k.knee.value = 6;
+    k.attack.value = p.atk / 1000; k.release.value = p.rel / 1000;
+    const g = c.createGain(); g.gain.value = Math.pow(10, p.makeup / 20);
+    src.connect(k).connect(g);
+    return g;
+  }),
+  limiter: (b, p) => limit(b, p.ceil, p.rel),
+  eq: (b, p) => graph(b, 0, (c, src) => {
+    const mk = (type, f, g, q) => { const n = c.createBiquadFilter(); n.type = type; n.frequency.value = f; n.gain.value = g; if (q) n.Q.value = q; return n; };
+    const a = mk('lowshelf', 120, p.low), m1 = mk('peaking', p.f1, p.g1, p.q), m2 = mk('peaking', p.f2, p.g2, p.q), h = mk('highshelf', 8000, p.high);
+    src.connect(a).connect(m1).connect(m2).connect(h);
+    return h;
+  }),
   gain: (b, p) => { const g = Math.pow(10, p.db / 20); return mapCh(b, (x) => x.map((v) => v * g)); },
   pitch: (b, p) => { const r = Math.pow(2, p.semi / 12); return mapCh(b, (x) => resample(stretch(x, r), r)); },
   speed: (b, p) => mapCh(b, (x) => stretch(x, 1 / p.rate)),
@@ -425,17 +475,71 @@ const PROC = {
 };
 
 function normalize(b, target) {
-  let peak = 0;
-  for (let c = 0; c < b.numberOfChannels; c++) {
-    const d = b.getChannelData(c);
-    for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; }
-  }
+  const peak = peakOf(b);
   if (peak < 1e-6) return b;
   const g = target / peak;
   return mapCh(b, (x) => x.map((v) => v * g));
 }
 
-// Aplica corte, reversão, cadeia de efeitos, fades e normalização. O original nunca é alterado.
+export function peakOf(b) {
+  let peak = 0;
+  for (let c = 0; c < b.numberOfChannels; c++) {
+    const d = b.getChannelData(c);
+    for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; }
+  }
+  return peak;
+}
+
+// Limitador com antecipação (lookahead): segura os picos abaixo do teto sem cortar a onda.
+export function limit(b, ceilDb = -1, relMs = 60) {
+  const ceil = Math.pow(10, ceilDb / 20), n = b.length, rate = b.sampleRate;
+  const L = Math.max(1, Math.round(0.005 * rate));
+  const req = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let a = 0;
+    for (let c = 0; c < b.numberOfChannels; c++) a = Math.max(a, Math.abs(b.getChannelData(c)[i]));
+    req[i] = a > ceil ? ceil / a : 1;
+  }
+  // mínimo numa janela à frente (fila monotônica)
+  const win = new Float32Array(n), dq = new Int32Array(n);
+  let h = 0, t = 0;
+  for (let i = n - 1; i >= 0; i--) {
+    while (t > h && req[dq[t - 1]] >= req[i]) t--;
+    dq[t++] = i;
+    while (dq[h] > i + L) h++;
+    win[i] = req[dq[h]];
+  }
+  const rel = Math.exp(-1 / (relMs / 1000 * rate)), atk = Math.exp(-1 / (L / 2));
+  const g = new Float32Array(n);
+  let cur = 1;
+  for (let i = 0; i < n; i++) {
+    const tg = win[i];
+    cur = tg < cur ? tg + (cur - tg) * atk : tg + (cur - tg) * rel;
+    g[i] = Math.min(cur, req[i]);
+  }
+  return mapCh(b, (x) => { const y = new Float32Array(x.length); for (let i = 0; i < x.length; i++) y[i] = Math.max(-ceil, Math.min(ceil, x[i] * g[i])); return y; });
+}
+
+// Curva de volume desenhada: pontos {t: 0..1, g: 0..2}, interpolação linear.
+function applyEnvelope(b, env) {
+  const pts = [...env].sort((a, z) => a.t - z.t);
+  return mapCh(b, (x) => {
+    const y = new Float32Array(x.length), n = x.length;
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      while (k < pts.length - 1 && pts[k + 1].t <= t) k++;
+      let g;
+      if (t <= pts[0].t) g = pts[0].g;
+      else if (k >= pts.length - 1) g = pts[pts.length - 1].g;
+      else { const a = pts[k], z = pts[k + 1]; g = a.g + (z.g - a.g) * (t - a.t) / Math.max(1e-9, z.t - a.t); }
+      y[i] = x[i] * g;
+    }
+    return y;
+  });
+}
+
+// Aplica corte, reversão, cadeia de efeitos, curva de volume, fades e normalização. O original nunca é alterado.
 export async function renderClip(orig, e, chain) {
   const r = orig.sampleRate;
   const s = Math.max(0, Math.floor((e.start || 0) * r));
@@ -444,6 +548,7 @@ export async function renderClip(orig, e, chain) {
   let b = newBuf(orig.numberOfChannels, en - s, r);
   for (let c = 0; c < orig.numberOfChannels; c++) b.copyToChannel(orig.getChannelData(c).subarray(s, en), c);
   if (e.reverse) b = mapCh(b, (x) => x.slice().reverse());
+  if (e.env && e.env.length) b = applyEnvelope(b, e.env);
   for (const fx of chain || []) if (fx.on && PROC[fx.type]) b = await PROC[fx.type](b, fx.params);
   const fi = Math.floor((e.fadeIn || 0) / 1000 * r), fo = Math.floor((e.fadeOut || 0) / 1000 * r);
   if (fi || fo) b = mapCh(b, (x) => {
@@ -470,8 +575,77 @@ export async function renderMix(items, rate = 44100) {
   return c.startRendering();
 }
 
+// ---------- análise ----------
+// Trechos com som, separados por silêncios. thrDb é relativo ao pico.
+export function detectSegments(b, { thrDb = -35, minSilMs = 200, minSegMs = 40, padMs = 25 } = {}) {
+  const rate = b.sampleRate, win = Math.max(1, Math.round(rate * 0.01)), n = b.length;
+  const frames = Math.ceil(n / win), lvl = new Float32Array(frames);
+  for (let f = 0; f < frames; f++) {
+    let s = 0;
+    const a = f * win, z = Math.min(n, a + win);
+    for (let c = 0; c < b.numberOfChannels; c++) { const d = b.getChannelData(c); for (let i = a; i < z; i++) s += d[i] * d[i]; }
+    lvl[f] = Math.sqrt(s / Math.max(1, (z - a) * b.numberOfChannels));
+  }
+  let peak = 0;
+  for (const v of lvl) peak = Math.max(peak, v);
+  if (peak < 1e-5) return [];
+  const thr = peak * Math.pow(10, thrDb / 20), minSil = Math.ceil(minSilMs / 10), minSeg = Math.ceil(minSegMs / 10), pad = padMs / 1000;
+  const segs = [];
+  let st = -1, quiet = 0;
+  for (let f = 0; f < frames; f++) {
+    if (lvl[f] >= thr) { if (st < 0) st = f; quiet = 0; }
+    else if (st >= 0 && ++quiet >= minSil) { const en = f - quiet + 1; if (en - st >= minSeg) segs.push([st, en]); st = -1; quiet = 0; }
+  }
+  if (st >= 0 && frames - quiet - st >= minSeg) segs.push([st, frames - quiet]);
+  const dur = b.duration;
+  return segs.map(([a, z]) => ({ start: Math.max(0, a * win / rate - pad), end: Math.min(dur, z * win / rate + pad) }));
+}
+
+// ---------- loudness (ITU-R BS.1770) ----------
+function kCoefs(fs) {
+  let G = 3.999843853973347, Qh = 0.7071752369554196, fc = 1681.974450955533;
+  let K = Math.tan(Math.PI * fc / fs), Vh = Math.pow(10, G / 20), Vb = Math.pow(Vh, 0.4996667741545416), a0 = 1 + K / Qh + K * K;
+  const s1 = { b: [(Vh + Vb * K / Qh + K * K) / a0, 2 * (K * K - Vh) / a0, (Vh - Vb * K / Qh + K * K) / a0], a: [2 * (K * K - 1) / a0, (1 - K / Qh + K * K) / a0] };
+  const Qp = 0.5003270373238773; fc = 38.13547087602444; K = Math.tan(Math.PI * fc / fs); a0 = 1 + K / Qp + K * K;
+  const s2 = { b: [1, -2, 1], a: [2 * (K * K - 1) / a0, (1 - K / Qp + K * K) / a0] };
+  return [s1, s2];
+}
+function biq(x, { b, a }) {
+  const y = new Float32Array(x.length);
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  for (let i = 0; i < x.length; i++) {
+    const v = b[0] * x[i] + b[1] * x1 + b[2] * x2 - a[0] * y1 - a[1] * y2;
+    x2 = x1; x1 = x[i]; y2 = y1; y1 = v; y[i] = v;
+  }
+  return y;
+}
+export function loudness(b) {
+  const fs = b.sampleRate, [s1, s2] = kCoefs(fs);
+  const chans = [];
+  for (let c = 0; c < b.numberOfChannels; c++) chans.push(biq(biq(b.getChannelData(c), s1), s2));
+  const blk = Math.round(0.4 * fs), hop = Math.round(0.1 * fs);
+  const z = [];
+  if (b.length < blk) {
+    let s = 0;
+    for (const d of chans) { let m = 0; for (const v of d) m += v * v; s += m / Math.max(1, d.length); }
+    z.push(s);
+  } else {
+    for (let st = 0; st + blk <= b.length; st += hop) {
+      let s = 0;
+      for (const d of chans) { let m = 0; for (let i = st; i < st + blk; i++) m += d[i] * d[i]; s += m / blk; }
+      z.push(s);
+    }
+  }
+  const L = (v) => -0.691 + 10 * Math.log10(v);
+  let g1 = z.filter((v) => L(v) > -70);
+  if (!g1.length) return -Infinity;
+  const rel = L(g1.reduce((a, v) => a + v, 0) / g1.length) - 10;
+  const g2 = g1.filter((v) => L(v) > rel);
+  return L(g2.reduce((a, v) => a + v, 0) / g2.length);
+}
+
 // ---------- exportação ----------
-export async function prepare(buf, { rate, mono }) {
+export async function prepare(buf, { rate, mono, lufs }) {
   let b = buf;
   if (mono && b.numberOfChannels > 1) {
     const m = new Float32Array(b.length);
@@ -487,17 +661,26 @@ export async function prepare(buf, { rate, mono }) {
     const s = c.createBufferSource(); s.buffer = b; s.connect(c.destination); s.start();
     b = await c.startRendering();
   }
+  if (lufs) {
+    const cur = loudness(b);
+    if (isFinite(cur)) {
+      const g = Math.pow(10, (lufs - cur) / 20);
+      b = mapCh(b, (x) => x.map((v) => v * g));
+      b = limit(b, -1, 50);
+    }
+  }
   return b;
 }
 
-export function encodeWav(b) {
+export function encodeWav(b, { loop = false } = {}) {
   const ch = b.numberOfChannels, n = b.length, rate = b.sampleRate;
-  const ab = new ArrayBuffer(44 + n * ch * 2), v = new DataView(ab);
+  const dataLen = n * ch * 2, smplLen = loop ? 8 + 36 + 24 : 0;
+  const ab = new ArrayBuffer(44 + dataLen + smplLen), v = new DataView(ab);
   const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  str(0, 'RIFF'); v.setUint32(4, 36 + n * ch * 2, true); str(8, 'WAVE');
+  str(0, 'RIFF'); v.setUint32(4, 36 + dataLen + smplLen, true); str(8, 'WAVE');
   str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, ch, true);
   v.setUint32(24, rate, true); v.setUint32(28, rate * ch * 2, true); v.setUint16(32, ch * 2, true); v.setUint16(34, 16, true);
-  str(36, 'data'); v.setUint32(40, n * ch * 2, true);
+  str(36, 'data'); v.setUint32(40, dataLen, true);
   const data = [];
   for (let c = 0; c < ch; c++) data.push(b.getChannelData(c));
   let o = 44;
@@ -506,18 +689,31 @@ export function encodeWav(b) {
     v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
     o += 2;
   }
+  if (loop) {
+    // chunk "smpl" com um loop do início ao fim (o Godot detecta ao importar)
+    str(o, 'smpl'); v.setUint32(o + 4, 60, true);
+    const f = [0, 0, Math.round(1e9 / rate), 60, 0, 0, 0, 1, 0];
+    f.forEach((x, k) => v.setUint32(o + 8 + k * 4, x, true));
+    const lp = o + 44;
+    [0, 0, 0, n - 1, 0, 0].forEach((x, k) => v.setUint32(lp + k * 4, x, true));
+  }
   return new Blob([ab], { type: 'audio/wav' });
+}
+
+const VENDOR = new URL('./vendor/', import.meta.url).href;
+function loadScript(src, ready) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => (ready ? ready(res) : res());
+    s.onerror = () => rej(new Error('Não consegui carregar o conversor. Abra o app com internet uma vez para ele ficar salvo.'));
+    document.head.appendChild(s);
+  });
 }
 
 let lameP;
 function loadLame() {
-  return lameP || (lameP = new Promise((res, rej) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
-    s.onload = () => res(window.lamejs);
-    s.onerror = () => { lameP = null; rej(new Error('Não consegui carregar o conversor de MP3. Verifique a internet.')); };
-    document.head.appendChild(s);
-  }));
+  return lameP || (lameP = loadScript(VENDOR + 'lame.min.js').then(() => window.lamejs).catch((e) => { lameP = null; throw e; }));
 }
 
 export async function encodeMp3(b) {
@@ -535,4 +731,23 @@ export async function encodeMp3(b) {
   const end = enc.flush();
   if (end.length) parts.push(new Uint8Array(end));
   return new Blob(parts, { type: 'audio/mpeg' });
+}
+
+let oggP;
+function loadOgg() {
+  return oggP || (oggP = new Promise((res, rej) => {
+    window.OggVorbisEncoderConfig = { memoryInitializerPrefixURL: VENDOR, onRuntimeInitialized: () => res(window.OggVorbisEncoder) };
+    loadScript(VENDOR + 'OggVorbisEncoder.min.js').catch(rej);
+    setTimeout(() => rej(new Error('O conversor de OGG demorou demais para carregar.')), 20000);
+  }).catch((e) => { oggP = null; throw e; }));
+}
+
+export async function encodeOgg(b, quality = 0.6) {
+  const Enc = await loadOgg();
+  const enc = new Enc(b.sampleRate, b.numberOfChannels, quality);
+  const chans = [];
+  for (let c = 0; c < b.numberOfChannels; c++) chans.push(b.getChannelData(c));
+  const step = 4096;
+  for (let i = 0; i < b.length; i += step) enc.encode(chans.map((d) => d.subarray(i, i + step)));
+  return enc.finish('audio/ogg');
 }
