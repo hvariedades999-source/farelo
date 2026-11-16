@@ -244,8 +244,8 @@ function curve(drive) {
   return c;
 }
 
-async function graph(buf, tailSec, build) {
-  const rate = buf.sampleRate, ch = Math.max(1, buf.numberOfChannels);
+async function graph(buf, tailSec, build, chOut) {
+  const rate = buf.sampleRate, ch = chOut || Math.max(1, buf.numberOfChannels);
   const c = new OfflineAudioContext(ch, Math.ceil(buf.length + tailSec * rate), rate);
   const src = c.createBufferSource();
   src.buffer = buf;
@@ -557,6 +557,7 @@ export async function renderClip(orig, e, chain) {
     for (let i = 0; i < Math.min(fo, n); i++) y[n - 1 - i] *= i / fo;
     return y;
   });
+  if (e.loop && e.loopXf > 0) b = loopCrossfade(b, e.loopXf);
   if (e.normalize) b = normalize(b, 0.89);
   return b;
 }
@@ -565,11 +566,22 @@ export async function renderMix(items, rate = 44100) {
   let len = 1;
   for (const it of items) len = Math.max(len, Math.ceil((it.offset + it.buf.duration) * rate));
   const c = new OfflineAudioContext(2, len, rate);
+  const ramp = (param, pts, map) => {
+    const ps = [...pts].sort((a, b) => a.t - b.t);
+    param.setValueAtTime(map(ps[0].v), 0);
+    for (const p of ps) param.linearRampToValueAtTime(map(p.v), Math.max(0, p.t));
+  };
   for (const it of items) {
     const s = c.createBufferSource(); s.buffer = it.buf;
     const g = c.createGain(); g.gain.value = it.vol;
+    const ag = c.createGain();
     const pn = c.createStereoPanner(); pn.pan.value = it.pan;
-    s.connect(g).connect(pn).connect(c.destination);
+    let node = s.connect(g).connect(ag);
+    const au = it.auto || {};
+    if (au.vol?.length) ramp(ag.gain, au.vol, (v) => v * 2);
+    if (au.cut?.length) { const f = c.createBiquadFilter(); f.type = 'lowpass'; ramp(f.frequency, au.cut, (v) => 100 * Math.pow(200, v)); node = node.connect(f); }
+    if (au.pan?.length) ramp(pn.pan, au.pan, (v) => v * 2 - 1);
+    node.connect(pn).connect(c.destination);
     s.start(it.offset);
   }
   return c.startRendering();
@@ -858,6 +870,7 @@ export async function applyOps(orig, ops) {
     else if (op.type === 'silence') b = opSilence(b, A, Z);
     else if (op.type === 'paste') { const s = states[Math.min(op.src.k, states.length - 1)]; b = opInsert(b, Math.round(op.at * r), sliceBuf(s, Math.round(op.src.a * r), Math.round(op.src.b * r))); }
     else if (op.type === 'fx') b = await opFx(b, A, Z, op.chain);
+    else if (op.type === 'norm') b = normRegion(b, A, Z);
     else if (op.type === 'spec') b = mapCh(b, (x) => specRepairCh(x, r, A, Z, op.f0, op.f1));
     states.push(b);
   }
@@ -865,3 +878,367 @@ export async function applyOps(orig, ops) {
   const m = opsCache.get(orig); if (m.size > 30) m.clear(); m.set(key, b);
   return b;
 }
+
+// ---------- loop perfeito ----------
+// Funde o fim no começo: o som passa a emendar sem clique ao repetir.
+export function loopCrossfade(b, ms) {
+  const X = Math.min(Math.floor((ms / 1000) * b.sampleRate), Math.floor(b.length / 2));
+  if (X < 2) return b;
+  const n = b.length, o = newBuf(b.numberOfChannels, n - X, b.sampleRate);
+  for (let c = 0; c < b.numberOfChannels; c++) {
+    const x = b.getChannelData(c), y = o.getChannelData(c);
+    for (let i = 0; i < n - X; i++) y[i] = x[i];
+    for (let i = 0; i < X; i++) { const f = i / X; y[i] = x[i] * Math.sin(f * Math.PI / 2) + x[n - X + i] * Math.cos(f * Math.PI / 2); }
+  }
+  return o;
+}
+// Procura, perto do fim, o ponto que mais combina com o começo.
+export function bestLoopEnd(buf, start, end, rangeS = 0.05) {
+  const r = buf.sampleRate, d = buf.getChannelData(0), W = Math.round(0.02 * r), S = Math.round(start * r);
+  const lo = Math.max(S + W * 2, Math.round((end - rangeS) * r)), hi = Math.min(d.length - W, Math.round((end + rangeS) * r));
+  let best = Math.round(end * r), bestC = -Infinity;
+  let ea = 0; for (let i = 0; i < W; i++) ea += d[S + i] * d[S + i];
+  for (let e = lo; e <= hi; e++) {
+    let c = 0, eb = 0;
+    for (let i = 0; i < W; i += 2) { c += d[S + i] * d[e + i]; eb += d[e + i] * d[e + i]; }
+    const nc = c / Math.sqrt(ea * eb * 0.5 + 1e-12);
+    if (nc > bestC) { bestC = nc; best = e; }
+  }
+  return best / r;
+}
+function normRegion(b, a, z) {
+  let pk = 0;
+  for (let c = 0; c < b.numberOfChannels; c++) { const d = b.getChannelData(c); for (let i = a; i < z; i++) pk = Math.max(pk, Math.abs(d[i])); }
+  if (pk < 1e-5) return b;
+  const g = 0.89 / pk, cf = Math.round(b.sampleRate * 0.005);
+  return mapCh(b, (x) => { const y = x.slice(); for (let i = a; i < z; i++) { const ramp = Math.min(1, (i - a) / cf, (z - 1 - i) / cf); y[i] = x[i] * (1 + (g - 1) * Math.max(0, ramp)); } return y; });
+}
+
+// ---------- efeitos novos ----------
+function rbj(type, f, q, fs, gainDb = 0) {
+  const w = 2 * Math.PI * f / fs, cs = Math.cos(w), sn = Math.sin(w), al = sn / (2 * q), A = Math.pow(10, gainDb / 40);
+  let b0, b1, b2, a0, a1, a2;
+  if (type === 'hp') { b0 = (1 + cs) / 2; b1 = -(1 + cs); b2 = b0; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; }
+  else if (type === 'bp') { b0 = al; b1 = 0; b2 = -al; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; }
+  else { b0 = (1 - cs) / 2; b1 = 1 - cs; b2 = b0; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; }
+  return { b: [b0 / a0, b1 / a0, b2 / a0], a: [a1 / a0, a2 / a0] };
+}
+function deess(x, p, rate) {
+  const hi = biq(x, rbj('hp', p.freq, 0.7, rate)), thr = Math.pow(10, p.thr / 20), ratio = p.ratio;
+  const atk = Math.exp(-1 / (0.001 * rate)), rel = Math.exp(-1 / (0.06 * rate));
+  const y = new Float32Array(x.length);
+  let env = 0;
+  for (let i = 0; i < x.length; i++) {
+    const a = Math.abs(hi[i]);
+    env = a > env ? a + (env - a) * atk : a + (env - a) * rel;
+    const g = env > thr ? Math.pow(thr / env, 1 - 1 / ratio) : 1;
+    y[i] = x[i] - hi[i] * (1 - g);
+  }
+  return y;
+}
+const ROOMS = [
+  // tamanho (s), decaimento, abafamento (0 brilhante..1 escuro), reflexões iniciais [s, ganho], ressonância Hz
+  { len: 0.45, dec: 4, damp: 0.3, early: [[0.007, 0.6], [0.013, 0.4]] },
+  { len: 1.1, dec: 3.5, damp: 0.4, early: [[0.012, 0.5], [0.021, 0.35], [0.03, 0.25]] },
+  { len: 2.6, dec: 3, damp: 0.5, early: [[0.02, 0.45], [0.037, 0.3], [0.05, 0.2]] },
+  { len: 6, dec: 2.5, damp: 0.6, early: [[0.035, 0.4], [0.06, 0.3], [0.09, 0.2]] },
+  { len: 4.5, dec: 2.2, damp: 0.8, early: [[0.08, 0.5], [0.17, 0.35], [0.29, 0.25], [0.43, 0.15]] },
+  { len: 1.4, dec: 3, damp: 0.1, early: [[0.004, 0.6], [0.009, 0.5]], ring: 1700 },
+];
+function roomIR(c, t, rate) {
+  const R = ROOMS[t], n = Math.floor(R.len * rate), ir = c.createBuffer(2, n, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    let lp = 0;
+    for (let i = 0; i < n; i++) {
+      const f = i / n, damp = R.damp * (0.3 + 0.7 * f);
+      lp = lp + (Math.random() * 2 - 1 - lp) * (1 - damp);
+      d[i] = lp * Math.pow(1 - f, R.dec);
+      if (R.ring) d[i] += Math.sin(2 * Math.PI * R.ring * (1 + ch * 0.01) * i / rate) * 0.25 * Math.pow(1 - f, R.dec * 1.5);
+    }
+    for (const [tt, g] of R.early) { const k = Math.floor(tt * rate * (1 + ch * 0.07)); if (k < n) d[k] += g; }
+  }
+  return ir;
+}
+// Detecção de tom (YIN simplificado, com o sinal reduzido pela metade)
+function detectF0(x, c, rate, N = 2048) {
+  const H = N >> 1, sr = rate / 2, minLag = Math.max(2, Math.floor(sr / 1000)), maxLag = Math.min(H - 2, Math.floor(sr / 70)), s = c - N / 2;
+  const seg = new Float32Array(H);
+  for (let i = 0; i < H; i++) { const j = s + i * 2; seg[i] = j >= 0 && j < x.length ? x[j] : 0; }
+  let en = 0; for (const v of seg) en += v * v;
+  if (en / H < 1e-6) return 0;
+  const W = H - maxLag, dfn = new Float32Array(maxLag + 2);
+  let sum = 0;
+  dfn[0] = 1;
+  for (let lag = 1; lag <= maxLag + 1; lag++) {
+    let dsum = 0;
+    for (let i = 0; i < W; i++) { const df = seg[i] - seg[i + lag]; dsum += df * df; }
+    sum += dsum;
+    dfn[lag] = sum > 0 ? (dsum * lag) / sum : 1;
+  }
+  let lag = -1;
+  for (let l = minLag; l <= maxLag; l++) if (dfn[l] < 0.15) { while (l < maxLag && dfn[l + 1] < dfn[l]) l++; lag = l; break; }
+  if (lag < 0) return 0;
+  const a = dfn[lag - 1], b = dfn[lag], cc = dfn[lag + 1], den = a - 2 * b + cc;
+  return sr / (lag + (den ? (a - cc) / (2 * den) : 0));
+}
+// PSOLA: recorta grãos de dois períodos em cada ciclo da voz e os reposiciona no novo espaçamento
+function psola(x, f0s, ratios, H, rate) {
+  const n = x.length, y = new Float32Array(n), ws = new Float32Array(n), F = f0s.length;
+  const at = (arr, t) => arr[Math.max(0, Math.min(F - 1, Math.floor(t / H)))];
+  const per = (t) => { const f = at(f0s, t); return f > 0 ? rate / f : rate * 0.008; };
+  const marks = [];
+  for (let t = 0; t < n; t += per(t)) marks.push(Math.round(t));
+  let mi = 0;
+  for (let to = 0; to < n;) {
+    while (mi < marks.length - 1 && Math.abs(marks[mi + 1] - to) <= Math.abs(marks[mi] - to)) mi++;
+    const m = marks[mi], T0 = per(m), r = at(f0s, m) > 0 ? at(ratios, m) : 1, L = Math.max(8, Math.round(T0)), o = Math.round(to);
+    for (let i = -L; i <= L; i++) {
+      const si = m + i, oi = o + i;
+      if (si < 0 || si >= n || oi < 0 || oi >= n) continue;
+      const w = 0.5 + 0.5 * Math.cos((Math.PI * i) / L);
+      y[oi] += x[si] * w; ws[oi] += w;
+    }
+    to += T0 / r;
+  }
+  for (let i = 0; i < n; i++) if (ws[i] > 1e-3) y[i] /= ws[i];
+  return y;
+}
+const SCALES = [null, [0, 2, 4, 5, 7, 9, 11], [0, 2, 3, 5, 7, 8, 10], [0, 2, 4, 7, 9]];
+function autotune(b, p) {
+  const rate = b.sampleRate, x = b.getChannelData(0), H = 256, F = Math.ceil(x.length / H) + 1;
+  const scale = SCALES[Math.round(p.scale)], key = Math.round(p.key);
+  const ratios = new Float32Array(F), f0s = new Float32Array(F);
+  const alpha = p.speed <= 0 ? 1 : 1 - Math.exp(-(H / rate) / (p.speed / 1000));
+  let cur = 0;
+  for (let f = 0; f < F; f++) {
+    const f0 = f % 2 === 0 ? detectF0(x, f * H, rate) : f0s[f - 1];
+    f0s[f] = f0;
+    let tgt = 0;
+    if (f0) {
+      const m = 69 + 12 * Math.log2(f0 / 440);
+      let best = Math.round(m);
+      if (scale) { let bd = 99; for (let k = Math.floor(m) - 2; k <= Math.ceil(m) + 2; k++) { const pc = (((k - key) % 12) + 12) % 12; if (scale.includes(pc) && Math.abs(k - m) < bd) { bd = Math.abs(k - m); best = k; } } }
+      tgt = (best - m) * (p.amount / 100);
+    }
+    cur += (tgt - cur) * alpha;
+    ratios[f] = Math.pow(2, cur / 12);
+  }
+  return mapCh(b, (ch) => psola(ch, f0s, ratios, H, rate));
+}
+// Tom e timbre (formantes) separados: o timbre original é reaplicado depois de mudar o tom
+function smoothEnv(m, W) {
+  const n = m.length, lg = new Float32Array(n), o = new Float32Array(n);
+  for (let k = 0; k < n; k++) lg[k] = Math.log(m[k] + 1e-9);
+  let acc = 0, cnt = 0;
+  for (let k = 0; k < Math.min(n, W); k++) { acc += lg[k]; cnt++; }
+  for (let k = 0; k < n; k++) {
+    if (k + W < n) { acc += lg[k + W]; cnt++; }
+    if (k - W - 1 >= 0) { acc -= lg[k - W - 1]; cnt--; }
+    o[k] = Math.exp(acc / cnt);
+  }
+  return o;
+}
+function formantFix(src, shifted, fRatio) {
+  const N = 2048, Hh = 512, B = N / 2 + 1, n = src.length;
+  const w = new Float32Array(N); for (let i = 0; i < N; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+  const y = new Float32Array(n + N), re = new Float64Array(N), im = new Float64Array(N), re2 = new Float64Array(N), im2 = new Float64Array(N);
+  const ma = new Float32Array(B), mb = new Float32Array(B);
+  for (let s0 = -N / 2; s0 < n; s0 += Hh) {
+    for (let i = 0; i < N; i++) { const j = s0 + i, ok = j >= 0 && j < n; re[i] = ok ? src[j] * w[i] : 0; im[i] = 0; re2[i] = ok ? shifted[j] * w[i] : 0; im2[i] = 0; }
+    fft(re, im, false); fft(re2, im2, false);
+    for (let k = 0; k < B; k++) { ma[k] = Math.hypot(re[k], im[k]); mb[k] = Math.hypot(re2[k], im2[k]); }
+    const ea = smoothEnv(ma, 10), eb = smoothEnv(mb, 10);
+    for (let k = 0; k < B; k++) {
+      const kk = k / fRatio, k0 = Math.floor(kk), fr = kk - k0;
+      const tgt = k0 + 1 < B ? ea[k0] * (1 - fr) + ea[k0 + 1] * fr : ea[B - 1] * 0.1;
+      const g = Math.max(0.05, Math.min(12, tgt / (eb[k] + 1e-9)));
+      re2[k] *= g; im2[k] *= g;
+      if (k > 0 && k < N / 2) { re2[N - k] = re2[k]; im2[N - k] = -im2[k]; }
+    }
+    fft(re2, im2, true);
+    for (let i = 0; i < N; i++) { const j = s0 + i; if (j >= 0 && j < n + N) y[j] += re2[i] * w[i] / 1.5; }
+  }
+  return y.subarray(0, n);
+}
+
+Object.assign(FX, {
+  deess: {
+    label: 'De-esser',
+    info: 'Reduz o chiado forte das letras S, X e CH na voz, sem abafar o resto.',
+    tip: 'Ouça com o A/B: o S deve ficar mais suave, mas ainda claro.',
+    params: {
+      freq: { label: 'Frequência', min: 3000, max: 10000, def: 5500, step: 1, unit: 'Hz', log: 1, hint: 'Onde fica o chiado. Vozes graves: 4–6 kHz; agudas: 6–9 kHz.' },
+      thr: { label: 'Limiar', min: -50, max: 0, def: -28, step: 1, unit: 'dB', hint: 'Mais baixo reduz mais os S.' },
+      ratio: { label: 'Intensidade', min: 1, max: 10, def: 4, step: 0.5, unit: ':1', hint: 'Quanto o chiado é reduzido quando passa do limiar.' },
+    },
+  },
+  flanger: {
+    label: 'Flanger',
+    info: 'Som de "avião a jato" ou de nave: uma cópia com atraso curtíssimo que varia, criando um varrido metálico.',
+    params: {
+      rate: { label: 'Velocidade', min: 0.05, max: 5, def: 0.3, step: 0.05, unit: 'Hz', hint: 'Quão rápido o varrido acontece.' },
+      depth: PCT('Profundidade', 70, 'Tamanho do varrido.'),
+      fb: PCT('Realimentação', 50, 'Deixa o efeito mais metálico e ressonante.'),
+      mix: MIX(50),
+    },
+  },
+  phaser: {
+    label: 'Phaser',
+    info: 'Varrido suave e rodopiante, como um som passando por um tubo. Clássico em sons de ficção científica e teletransporte.',
+    params: {
+      rate: { label: 'Velocidade', min: 0.05, max: 8, def: 0.5, step: 0.05, unit: 'Hz', hint: 'Quão rápido o efeito gira.' },
+      depth: PCT('Profundidade', 70, 'Faixa de frequências que o efeito percorre.'),
+      fb: PCT('Ressonância', 40, 'Deixa o efeito mais marcado.'),
+      mix: MIX(50),
+    },
+  },
+  wah: {
+    label: 'Wah automático',
+    info: 'Um filtro que abre e fecha sozinho, fazendo o som "falar" (uá-uá). Bom para criaturas, máquinas e sons cômicos.',
+    params: {
+      rate: { label: 'Velocidade', min: 0.1, max: 10, def: 2, step: 0.1, unit: 'Hz', hint: 'Quantos "uás" por segundo.' },
+      low: HZ('Frequência baixa', 200, 2000, 400, 'Onde o filtro fecha.'),
+      high: HZ('Frequência alta', 800, 6000, 2500, 'Onde o filtro abre.'),
+      q: { label: 'Ressonância', min: 1, max: 20, def: 6, step: 0.5, unit: '', hint: 'Valores altos deixam o "uá" mais pronunciado.' },
+      mix: MIX(100),
+    },
+  },
+  room: {
+    label: 'Reverb de ambiente',
+    info: 'Coloca o som num lugar específico: quarto, sala, salão, catedral, caverna ou dentro de algo metálico.',
+    tip: 'Para jogos, combine o ambiente com a fase: caverna para masmorras, salão para castelos, metal para naves e dutos.',
+    params: {
+      type: { label: 'Ambiente', min: 0, max: 5, def: 1, step: 1, unit: '', labels: ['Quarto', 'Sala', 'Salão', 'Catedral', 'Caverna', 'Metal'], hint: 'O tipo de lugar simulado.' },
+      pre: { label: 'Pré-atraso', min: 0, max: 200, def: 10, step: 1, unit: 'ms', hint: 'Espera antes do reverb começar. Aumenta a sensação de tamanho sem embolar.' },
+      mix: MIX(35),
+    },
+  },
+  pingpong: {
+    label: 'Eco ping-pong',
+    info: 'Eco que alterna entre o lado esquerdo e o direito. Deixa o som largo e espacial (precisa exportar em estéreo).',
+    tip: 'Desmarque "Mono" na exportação para manter o efeito.',
+    params: {
+      time: { label: 'Tempo', min: 30, max: 1000, def: 220, step: 5, unit: 'ms', hint: 'Intervalo entre os ecos.' },
+      fb: { label: 'Repetições', min: 0, max: 90, def: 45, step: 1, unit: '%', hint: 'Quanto cada eco volta.' },
+      mix: MIX(40),
+    },
+  },
+  vocoder: {
+    label: 'Vocoder',
+    info: 'A voz "toca" um sintetizador: a fala controla um som eletrônico. É a voz clássica de robô e de vilão de ficção científica.',
+    tip: 'Fale devagar e articulado. Mais bandas deixam a fala mais compreensível.',
+    params: {
+      freq: HZ('Tom do robô', 40, 400, 110, 'Nota do sintetizador que a voz controla.'),
+      bands: { label: 'Bandas', min: 8, max: 32, def: 20, step: 1, unit: '', hint: 'Mais bandas: fala mais clara. Menos: mais robótico.' },
+      carrier: { label: 'Timbre', min: 0, max: 2, def: 0, step: 1, unit: '', labels: ['Serra', 'Quadrada', 'Acorde'], hint: 'O som do sintetizador.' },
+      mix: MIX(100),
+    },
+  },
+  autotune: {
+    label: 'Afinação (auto-tune)',
+    info: 'Puxa a voz para a nota afinada mais próxima. Com velocidade zero, fica o efeito robótico famoso; com velocidade maior, só corrige de leve.',
+    tip: 'Funciona melhor em voz sem fundo e sem reverb. Coloque antes dos outros efeitos.',
+    params: {
+      amount: PCT('Força', 100, 'Quanto a voz é puxada para a nota certa.'),
+      speed: { label: 'Velocidade', min: 0, max: 300, def: 20, step: 5, unit: 'ms', hint: '0 é instantâneo (robótico). Valores maiores soam naturais.' },
+      scale: { label: 'Escala', min: 0, max: 3, def: 0, step: 1, unit: '', labels: ['Cromática', 'Maior', 'Menor', 'Pentatônica'], hint: 'Quais notas são permitidas.' },
+      key: { label: 'Tonalidade', min: 0, max: 11, def: 0, step: 1, unit: '', labels: ['Dó', 'Dó#', 'Ré', 'Ré#', 'Mi', 'Fá', 'Fá#', 'Sol', 'Sol#', 'Lá', 'Lá#', 'Si'], hint: 'A nota base da escala (não vale para Cromática).' },
+    },
+  },
+  formant: {
+    label: 'Voz: tom e timbre',
+    info: 'Muda o tom da voz mantendo o timbre natural, ou muda o timbre sem mudar o tom. Com os dois, dá para criar vozes de gigante, criança, criatura ou trocar o "gênero" da voz.',
+    tip: 'Tom -5 com timbre 0 deixa a voz mais grave sem ficar com som de monstro artificial. Timbre negativo deixa a voz maior e mais escura.',
+    params: {
+      semi: { label: 'Tom', min: -12, max: 12, def: -4, step: 0.5, unit: 'st', hint: 'Mais grave ou mais agudo, em semitons.' },
+      fmt: { label: 'Timbre', min: -12, max: 12, def: 0, step: 0.5, unit: 'st', hint: '0 mantém o timbre original. Negativo: corpo maior, voz mais escura. Positivo: voz menor e mais fina.' },
+    },
+  },
+});
+
+Object.assign(PROC, {
+  deess: (b, p) => mapCh(b, (x) => deess(x, p, b.sampleRate)),
+  flanger: (b, p) => graph(b, 0.05, (c, src) => {
+    const d = c.createDelay(0.05); d.delayTime.value = 0.004;
+    const o = c.createOscillator(); o.frequency.value = p.rate;
+    const og = c.createGain(); og.gain.value = 0.0035 * p.depth / 100;
+    o.connect(og).connect(d.delayTime); o.start();
+    const fb = c.createGain(); fb.gain.value = 0.9 * p.fb / 100;
+    d.connect(fb).connect(d);
+    return wetDry(c, src, d, d, p.mix / 100);
+  }),
+  phaser: (b, p) => graph(b, 0, (c, src) => {
+    const o = c.createOscillator(); o.frequency.value = p.rate; o.start();
+    const og = c.createGain(); og.gain.value = 1200 * p.depth / 100;
+    o.connect(og);
+    const inp = c.createGain(), fb = c.createGain(); fb.gain.value = 0.85 * p.fb / 100;
+    let last = inp;
+    for (let i = 0; i < 6; i++) { const a = c.createBiquadFilter(); a.type = 'allpass'; a.frequency.value = 400 + i * 350; a.Q.value = 0.6; og.connect(a.frequency); last = last.connect(a); }
+    last.connect(fb).connect(inp);
+    return wetDry(c, src, inp, last, p.mix / 100);
+  }),
+  wah: (b, p) => graph(b, 0, (c, src) => {
+    const f = c.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = p.q;
+    const lo = Math.min(p.low, p.high), hi = Math.max(p.low, p.high);
+    f.frequency.value = (lo + hi) / 2;
+    const o = c.createOscillator(); o.frequency.value = p.rate; o.start();
+    const og = c.createGain(); og.gain.value = (hi - lo) / 2;
+    o.connect(og).connect(f.frequency);
+    const mk = c.createGain(); mk.gain.value = 2.5;
+    f.connect(mk);
+    return wetDry(c, src, f, mk, p.mix / 100);
+  }),
+  room: (b, p) => graph(b, ROOMS[Math.round(p.type)].len + p.pre / 1000, (c, src) => {
+    const cv = c.createConvolver(); cv.buffer = roomIR(c, Math.round(p.type), b.sampleRate);
+    const pd = c.createDelay(1); pd.delayTime.value = p.pre / 1000;
+    pd.connect(cv);
+    return wetDry(c, src, pd, cv, p.mix / 100);
+  }),
+  pingpong: (b, p) => {
+    const t = p.time / 1000, f = p.fb / 100, tail = Math.min(12, f > 0.01 ? (2 * t * Math.log(0.001)) / Math.log(f) : t * 2) + 0.1;
+    return graph(b, tail, (c, src) => {
+      const mono = c.createGain(); mono.channelCount = 1; mono.channelCountMode = 'explicit'; mono.channelInterpretation = 'speakers';
+      src.connect(mono);
+      const dL = c.createDelay(2), dR = c.createDelay(2); dL.delayTime.value = t; dR.delayTime.value = t;
+      const gL = c.createGain(), gR = c.createGain(); gL.gain.value = f; gR.gain.value = f;
+      mono.connect(dL); dL.connect(gL).connect(dR); dR.connect(gR).connect(dL);
+      const m = c.createChannelMerger(2), wet = c.createGain(); wet.gain.value = p.mix / 100;
+      dL.connect(m, 0, 0); dR.connect(m, 0, 1); m.connect(wet);
+      const dry = c.createGain(); dry.gain.value = 1 - (p.mix / 100) * 0.5;
+      const out = c.createGain(); src.connect(dry).connect(out); wet.connect(out);
+      return out;
+    }, 2);
+  },
+  vocoder: async (b, p) => {
+    const res = await graph(b, 0, (c, src) => {
+      const n = Math.round(p.bands), out = c.createGain(), carrier = c.createGain();
+      const freqs = Math.round(p.carrier) === 2 ? [p.freq, p.freq * 1.26, p.freq * 1.5] : [p.freq];
+      for (const fq of freqs) { const o = c.createOscillator(); o.type = Math.round(p.carrier) === 1 ? 'square' : 'sawtooth'; o.frequency.value = fq; o.start(); o.connect(carrier); }
+      const nz = c.createBufferSource(), nb = c.createBuffer(1, b.length, b.sampleRate), nd = nb.getChannelData(0);
+      for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * 0.15;
+      nz.buffer = nb; nz.start(); nz.connect(carrier);
+      const abs = new Float32Array(1024); for (let i = 0; i < 1024; i++) abs[i] = Math.abs(i / 511.5 - 1);
+      for (let i = 0; i < n; i++) {
+        const f = 120 * Math.pow(8000 / 120, (i + 0.5) / n), q = n / 3;
+        const ma = c.createBiquadFilter(); ma.type = 'bandpass'; ma.frequency.value = f; ma.Q.value = q;
+        const rect = c.createWaveShaper(); rect.curve = abs;
+        const sm = c.createBiquadFilter(); sm.type = 'lowpass'; sm.frequency.value = 40;
+        const eg = c.createGain(); eg.gain.value = 6;
+        src.connect(ma).connect(rect).connect(sm).connect(eg);
+        const cb = c.createBiquadFilter(); cb.type = 'bandpass'; cb.frequency.value = f; cb.Q.value = q;
+        const vca = c.createGain(); vca.gain.value = 0;
+        eg.connect(vca.gain);
+        carrier.connect(cb).connect(vca).connect(out);
+      }
+      return wetDry(c, src, out, out, p.mix / 100);
+    });
+    const pa = peakOf(b), pr = peakOf(res);
+    return pr > 1e-6 ? normalize(res, Math.min(0.95, pa * 1.1 + 0.05)) : res;
+  },
+  autotune: (b, p) => autotune(b, p),
+  formant: async (b, p) => {
+    const r = Math.pow(2, p.semi / 12), fr = Math.pow(2, (p.fmt - (0)) / 12);
+    return mapCh(b, (x) => { const sh = Math.abs(p.semi) < 0.01 ? x : resample(stretch(x, r), r); const y = new Float32Array(x.length); y.set(sh.subarray(0, x.length)); return formantFix(x, y, fr); });
+  },
+});

@@ -14,6 +14,10 @@ Abrir: https://hvariedades999-source.github.io/sfx-studio/
 - Edição de trechos (recortar, copiar, colar, silenciar, efeito no trecho) e reparo no espectrograma
 - Gerador de sons retrô estilo sfxr
 - Pacote Godot (.tres AudioStreamRandomizer), preset em lote, mixagem com grade, cortes, fades e gravação de camada
+- Efeitos de voz e espaço: de-esser, afinação, tom e timbre, vocoder, reverb de ambiente, ping-pong, flanger, phaser, wah
+- Marcadores, zoom vertical, visão estéreo, normalizar trecho, loop perfeito, importar áudio de vídeo
+- Gerador com ambientes, sons de interface, passos e sintetizador com teclado
+- Automação de volume, pan e filtro na mixagem; envio direto para o Google Drive
 - Backup e restauração da biblioteca, funciona sem internet
 
 Bibliotecas incluídas em `vendor/`: lamejs (LGPL, MP3) e ogg-vorbis-encoder-js (BSD/MIT, OGG Vorbis).

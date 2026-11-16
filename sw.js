@@ -1,6 +1,6 @@
 // Guarda o app no celular para funcionar sem internet. Sempre tenta a versão nova primeiro.
-const CACHE = 'sfx-studio-v6';
-const ASSETS = ['./', 'index.html', 'style.css?v=6', 'app.js?v=6', 'dsp.js', 'icons.js', 'sfxr.js', 'manifest.json', 'icon.svg',
+const CACHE = 'sfx-studio-v8';
+const ASSETS = ['./', 'index.html', 'style.css?v=8', 'app.js?v=8', 'dsp.js', 'icons.js', 'sfxr.js', 'procgen.js', 'drive.js', 'manifest.json', 'icon.svg',
   'vendor/lame.min.js', 'vendor/OggVorbisEncoder.min.js', 'vendor/OggVorbisEncoder.min.js.mem'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {

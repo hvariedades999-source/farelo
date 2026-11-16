@@ -1,6 +1,8 @@
 import * as D from './dsp.js';
 import { ic } from './icons.js';
 import * as G from './sfxr.js';
+import * as P from './procgen.js';
+import * as DR from './drive.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -19,6 +21,7 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
 
 // ---------- preferências: tema e vibração ----------
 const settings = { theme: 'dark', vib: true, ...store.get('settings', {}) };
+settings.drive = { clientId: '', folder: 'SFX Studio', ...(settings.drive || {}) };
 let C;
 function applyTheme() {
   document.documentElement.dataset.theme = settings.theme;
@@ -105,15 +108,15 @@ function playPos() {
 }
 
 // ---------- desenho ----------
-const col = () => C || (C = Object.fromEntries(['--wave', '--wave-dim', '--handle', '--fg', '--muted', '--accent', '--c4', '--rec', '--bg', '--line', '--sel'].map((v) => [v.slice(2), getComputedStyle(document.documentElement).getPropertyValue(v).trim()])));
+const col = () => C || (C = Object.fromEntries(['--wave', '--wave-dim', '--handle', '--fg', '--muted', '--accent', '--c3', '--c4', '--rec', '--bg', '--line', '--sel'].map((v) => [v.slice(2), getComputedStyle(document.documentElement).getPropertyValue(v).trim()])));
 
 const peakCache = new WeakMap();
-function peaks(buf, v0, v1, w) {
-  const key = `${v0}|${v1}|${w}`;
+function peaks(buf, v0, v1, w, ch = 0) {
+  const key = `${v0}|${v1}|${w}|${ch}`;
   let m = peakCache.get(buf);
   if (!m) { m = new Map(); peakCache.set(buf, m); }
   if (m.has(key)) return m.get(key);
-  const d = buf.getChannelData(0), r = buf.sampleRate, mn = new Float32Array(w), mx = new Float32Array(w);
+  const d = buf.getChannelData(Math.min(ch, buf.numberOfChannels - 1)), r = buf.sampleRate, mn = new Float32Array(w), mx = new Float32Array(w);
   for (let px = 0; px < w; px++) {
     const a = Math.max(0, Math.floor((v0 + (px / w) * (v1 - v0)) * r));
     const b = Math.min(d.length, Math.max(a + 1, Math.floor((v0 + ((px + 1) / w) * (v1 - v0)) * r)));
@@ -185,12 +188,18 @@ function drawWave(cv, buf, o = {}) {
     x.drawImage(specCanvas(buf, v0, v1, w, h), 0, 0, w, h);
     if (o.start != null) { x.fillStyle = 'rgba(0,0,0,.6)'; x.fillRect(0, 0, Math.max(0, T(o.start)), h); x.fillRect(T(o.end), 0, w, h); }
   } else {
-    const { mn, mx } = peaks(buf, v0, v1, Math.ceil(w)), mid = h / 2;
+    const lanes = o.stereo && buf.numberOfChannels > 1 ? 2 : 1, vz = o.vz || 1;
     const sx = o.start != null ? T(o.start) : -1, ex = o.end != null ? T(o.end) : w + 1;
-    x.fillStyle = K.line; x.fillRect(0, mid, w, 1);
-    for (let px = 0; px < mn.length; px++) {
-      x.fillStyle = px >= sx && px <= ex ? (o.color || K.wave) : K['wave-dim'];
-      x.fillRect(px, mid + mn[px] * mid * 0.92, 1, Math.max(1, (mx[px] - mn[px]) * mid * 0.92));
+    for (let L = 0; L < lanes; L++) {
+      const { mn, mx } = peaks(buf, v0, v1, Math.ceil(w), L), lh = h / lanes, mid = lh * L + lh / 2, amp = (lh / 2) * 0.92;
+      x.fillStyle = K.line; x.fillRect(0, mid, w, 1);
+      if (L) x.fillRect(0, lh * L, w, 1);
+      for (let px = 0; px < mn.length; px++) {
+        const lo = Math.max(-1, mn[px] * vz), hi = Math.min(1, mx[px] * vz);
+        x.fillStyle = px >= sx && px <= ex ? (o.color || K.wave) : K['wave-dim'];
+        x.fillRect(px, mid + lo * amp, 1, Math.max(1, (hi - lo) * amp));
+      }
+      if (lanes === 2) { x.fillStyle = K.muted; x.font = '600 10px system-ui'; x.fillText(L ? 'D' : 'E', w - 12, lh * L + 24); }
     }
   }
   if (o.ruler) {
@@ -212,6 +221,15 @@ function drawWave(cv, buf, o = {}) {
     x.strokeStyle = '#fff'; x.lineWidth = 2; x.setLineDash([6, 4]);
     x.strokeRect(T(o.rect.a), y0, T(o.rect.b) - T(o.rect.a), y1 - y0); x.setLineDash([]);
     x.fillStyle = 'rgba(255,255,255,.12)'; x.fillRect(T(o.rect.a), y0, T(o.rect.b) - T(o.rect.a), y1 - y0);
+  }
+  if (o.markers) for (const m of o.markers) {
+    const mx2 = T(m.t);
+    if (mx2 < -2 || mx2 > w + 2) continue;
+    x.fillStyle = K.c3 || '#b48cf2'; x.globalAlpha = 0.9; x.fillRect(mx2, 14, 1.5, h - 14);
+    x.font = '600 10px system-ui';
+    const tw = Math.min(90, x.measureText(m.name).width + 8);
+    x.fillRect(mx2, 14, tw, 14); x.globalAlpha = 1;
+    x.fillStyle = '#111'; x.fillText(m.name, mx2 + 4, 25, tw - 6);
   }
   if (o.start != null) {
     x.fillStyle = K.handle;
@@ -252,7 +270,7 @@ function drawThumb(cv, th) {
 // ---------- componentes: sliders, gavetas, avisos ----------
 const toSlider = (p, v) => (p.log ? Math.round(1000 * Math.log(v / p.min) / Math.log(p.max / p.min)) : v);
 const fromSlider = (p, s) => (p.log ? Math.round(p.min * Math.pow(p.max / p.min, s / 1000)) : +s);
-const show = (p, v) => (p.unit === 'Hz' && v >= 1000 ? (v / 1000).toFixed(1) + ' kHz' : `${+(+v).toFixed(p.step < 0.1 ? 2 : p.step < 1 ? 1 : 0)}${p.unit ? (p.unit.startsWith(':') ? p.unit : ' ' + p.unit) : ''}`);
+const show = (p, v) => p.labels ? p.labels[Math.round(v)] ?? '' : (p.unit === 'Hz' && v >= 1000 ? (v / 1000).toFixed(1) + ' kHz' : `${+(+v).toFixed(p.step < 0.1 ? 2 : p.step < 1 ? 1 : 0)}${p.unit ? (p.unit.startsWith(':') ? p.unit : ' ' + p.unit) : ''}`);
 function sliderRow(k, p, v) {
   return `<div class="prm" data-k="${k}"><span>${p.label}</span><input type="range" aria-label="${esc(p.label)}" min="${p.log ? 0 : p.min}" max="${p.log ? 1000 : p.max}" step="${p.log ? 1 : p.step}" value="${toSlider(p, v)}"><button type="button" class="val" aria-label="Digitar valor de ${esc(p.label)}">${show(p, v)}</button></div>`;
 }
@@ -306,8 +324,8 @@ function sheet(title, body, { onClose, icon } = {}) {
 }
 
 // ---------- efeitos: cartões, seletor e gaveta ----------
-const GROUPS = [['Limpeza', ['denoise', 'gate']], ['Volume e dinâmica', ['gain', 'comp', 'limiter']], ['Timbre', ['eq', 'lowpass', 'highpass', 'bandpass']], ['Tom e tempo', ['pitch', 'speed', 'tape']], ['Distorção', ['dist', 'crush', 'robot', 'radio']], ['Espaço e movimento', ['echo', 'reverb', 'chorus', 'tremolo']]];
-const SHORT = { denoise: 'Remove chiado constante', gate: 'Silencia os vazios', gain: 'Mais alto ou mais baixo', comp: 'Som mais encorpado', limiter: 'Segura os picos', eq: 'Graves, médios e agudos', lowpass: 'Abafa o som', highpass: 'Tira o grave', bandpass: 'Isola uma faixa', pitch: 'Mais grave ou agudo', speed: 'Mais rápido ou lento', tape: 'Tom e velocidade juntos', dist: 'Som rasgado', crush: 'Som de videogame antigo', robot: 'Voz metálica', radio: 'Rádio ou telefone', echo: 'Repetições', reverb: 'Sala, salão, caverna', chorus: 'Várias vozes juntas', tremolo: 'Volume pulsante' };
+const GROUPS = [['Limpeza', ['denoise', 'gate', 'deess']], ['Volume e dinâmica', ['gain', 'comp', 'limiter']], ['Timbre', ['eq', 'lowpass', 'highpass', 'bandpass']], ['Voz, tom e tempo', ['formant', 'autotune', 'pitch', 'speed', 'tape']], ['Distorção e robô', ['dist', 'crush', 'robot', 'vocoder', 'radio']], ['Espaço', ['room', 'reverb', 'echo', 'pingpong']], ['Modulação', ['chorus', 'flanger', 'phaser', 'wah', 'tremolo']]];
+const SHORT = { denoise: 'Remove chiado constante', gate: 'Silencia os vazios', gain: 'Mais alto ou mais baixo', comp: 'Som mais encorpado', limiter: 'Segura os picos', eq: 'Graves, médios e agudos', lowpass: 'Abafa o som', highpass: 'Tira o grave', bandpass: 'Isola uma faixa', pitch: 'Mais grave ou agudo', speed: 'Mais rápido ou lento', tape: 'Tom e velocidade juntos', dist: 'Som rasgado', crush: 'Som de videogame antigo', robot: 'Voz metálica', radio: 'Rádio ou telefone', echo: 'Repetições', reverb: 'Sala, salão, caverna', chorus: 'Várias vozes juntas', tremolo: 'Volume pulsante', deess: 'Suaviza o chiado do S', flanger: 'Varrido de jato', phaser: 'Varrido rodopiante', wah: 'Filtro que fala', room: 'Quarto, caverna, metal…', pingpong: 'Eco de um lado ao outro', vocoder: 'Voz de robô clássica', autotune: 'Afina a voz', formant: 'Tom sem perder o timbre' };
 function pickEffect(onPick) {
   const s = sheet('Adicionar efeito', GROUPS.map(([g, ks]) => `<h3 class="gh">${g}</h3><div class="fxgrid">${ks.map((k) => `<button class="fxtile" data-t="${k}">${ic(k)}<b>${D.FX[k].label.replace(/ \(.*\)/, '')}</b><small>${SHORT[k]}</small></button>`).join('')}</div>`).join(''), { icon: 'plus' });
   $$('.fxtile', s.body).forEach((b) => b.onclick = () => { s.close(); onPick(b.dataset.t); });
@@ -389,6 +407,7 @@ function exportPanel(id, { godot = false } = {}) {
     <div class="btns">
       <button class="primary" data-act="share">${ic('share')}<span class="lbl">Enviar ${expOpts.fmt.toUpperCase()}</span><small>Drive e outros</small></button>
       <button class="wa" data-act="wa">${ic('share')}Enviar no WhatsApp <small>MP3</small></button>
+      ${settings.drive.clientId ? `<button data-act="drive">${ic('drive')}Enviar para o Drive <small>${esc(settings.drive.folder)}</small></button>` : ''}
       <button data-act="save">${ic('download')}Salvar no celular</button>
     </div>
     <p class="msg" role="status"></p>
@@ -436,6 +455,12 @@ function bindExport(el, getItems, { packName } = {}) {
       let tres = null;
       if (act !== 'wa' && $('.gd', el)?.checked) tres = new File([godotTres(files.map((f) => f.name), expOpts.gdir)], `${safe(packName ? packName() : items[0].name)}.tres`, { type: 'text/plain' });
       const total = files.length + (tres ? 1 : 0);
+      if (act === 'drive') {
+        const all2 = [...files, ...(tres ? [tres] : [])];
+        await DR.upload(all2, settings.drive, (i, n) => { msg.textContent = `Enviando ${i + 1} de ${n} para o Drive…`; });
+        msg.textContent = `${all2.length > 1 ? all2.length + ' arquivos enviados' : 'Enviado'} para a pasta "${settings.drive.folder}" no Drive.`;
+        return;
+      }
       if (act === 'save') { [...files, ...(tres ? [tres] : [])].forEach(download); msg.textContent = `${total > 1 ? total + ' arquivos salvos' : 'Salvo'} em Downloads.`; return; }
       if (tres) {
         const withT = [...files, tres];
@@ -515,7 +540,7 @@ async function library() {
     ${needBk ? `<div class="banner"><span>${lastBk ? 'Seu último backup tem mais de uma semana.' : 'Suas gravações só existem neste celular.'} Faça um backup no Drive.</span><button id="goBk">Backup</button></div>` : ''}
     <div class="hero">
       <button class="recbig" id="btnRec">${ic('mic')}Gravar</button>
-      <label class="btn ghost">${ic('download')}Importar<input type="file" accept="audio/*" id="imp" multiple hidden></label>
+      <label class="btn ghost">${ic('download')}Importar<input type="file" accept="audio/*,video/*" id="imp" multiple hidden></label>
     </div>
     ${clips.length ? `
     <div class="searchrow"><label class="search">${ic('search')}<input id="q" type="search" placeholder="Buscar" value="${esc(query)}" autocomplete="off" aria-label="Buscar"></label>
@@ -552,6 +577,7 @@ async function library() {
       <p class="hint">O backup junta todos os sons, presets e mixagens num arquivo só. Guarde no Drive: se você limpar os dados do navegador ou trocar de celular, é só restaurar.${lastBk ? ` Último backup: ${new Date(lastBk).toLocaleDateString('pt-BR')}.` : ''}</p>
       <div class="btns">
         <button class="primary" id="bkShare">${ic('share')}Enviar backup <small>Drive</small></button>
+        ${settings.drive.clientId ? `<button id="bkDrive">${ic('drive')}Backup direto no Drive <small>${esc(settings.drive.folder)}</small></button>` : ''}
         <button id="bkSave">${ic('download')}Salvar backup no celular</button>
         <label class="btn ghost">${ic('export')}Restaurar backup<input type="file" id="bkIn" hidden></label>
       </div>
@@ -563,7 +589,7 @@ async function library() {
   $('#imp').onchange = async (e) => {
     for (const f of e.target.files) {
       const clip = newClip(f.name.replace(/\.[^.]+$/, ''), f);
-      try { const b = await decode(clip); clip.dur = b.duration; clip.thumb = thumbOf(b); } catch { toast(`Não consegui abrir ${f.name}`); continue; }
+      try { const b = await decode(clip); clip.dur = b.duration; clip.thumb = thumbOf(b); } catch { toast(f.type.startsWith('video') ? `O vídeo ${f.name} não tem áudio que o navegador consiga ler.` : `Não consegui abrir ${f.name}`); continue; }
       await put('clips', clip);
     }
     library();
@@ -641,6 +667,10 @@ async function library() {
     try { bkMsg.textContent = 'Montando backup…'; const f = await makeBackup(); await share([f], bkMsg, 'Backup enviado. Escolha uma pasta no Drive.'); if (!/cancel/i.test(bkMsg.textContent)) store.set('bk', Date.now()); }
     catch (e) { bkMsg.textContent = 'Erro: ' + e.message; }
   };
+  if ($('#bkDrive')) $('#bkDrive').onclick = async () => {
+    try { bkMsg.textContent = 'Montando backup…'; const f = await makeBackup(); bkMsg.textContent = 'Enviando para o Drive…'; await DR.upload([f], settings.drive); store.set('bk', Date.now()); bkMsg.textContent = `Backup salvo na pasta "${settings.drive.folder}" do Drive.`; }
+    catch (e) { bkMsg.textContent = 'Erro: ' + e.message; }
+  };
   $('#bkSave').onclick = async () => {
     try { bkMsg.textContent = 'Montando backup…'; download(await makeBackup()); store.set('bk', Date.now()); bkMsg.textContent = 'Backup salvo em Downloads.'; }
     catch (e) { bkMsg.textContent = 'Erro: ' + e.message; }
@@ -666,11 +696,37 @@ async function openSettings() {
     <label class="field">Tema<select id="stTheme">${[['dark', 'Escuro'], ['light', 'Claro'], ['system', 'Igual ao celular']].map(([v, l]) => `<option value="${v}" ${settings.theme === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label class="check"><input type="checkbox" id="stVib" ${settings.vib ? 'checked' : ''}> Vibrar ao tocar nos botões</label>
     <button id="stTour">Ver o tutorial de novo</button>
+    <details class="card"><summary>${ic('drive')}Envio direto para o Google Drive</summary>
+      <p class="hint">Com isso configurado, aparece o botão "Enviar para o Drive", que manda os arquivos direto para uma pasta, sem passar pelo menu de compartilhar.</p>
+      <label class="field">ID do cliente OAuth<input id="stCid" value="${esc(settings.drive.clientId)}" placeholder="…apps.googleusercontent.com" autocomplete="off"></label>
+      <label class="field">Pasta no Drive<input id="stFolder" value="${esc(settings.drive.folder)}" autocomplete="off"></label>
+      <div class="row"><button id="stDsave" class="primary">Salvar</button><button id="stDtest">Testar conexão</button></div>
+      <p class="msg" id="stDmsg"></p>
+      <details><summary>Como conseguir o ID do cliente (uma vez só)</summary>
+        <ol class="steps">
+          <li>No navegador, abra console.cloud.google.com e crie um projeto (ex.: "SFX Studio").</li>
+          <li>Em "APIs e serviços" → "Biblioteca", procure "Google Drive API" e ative.</li>
+          <li>Em "Tela de permissão OAuth", escolha "Externo", preencha o nome do app e seu e-mail, e em "Usuários de teste" adicione o seu e-mail do Google.</li>
+          <li>Em "Credenciais" → "Criar credenciais" → "ID do cliente OAuth", tipo "Aplicativo da Web".</li>
+          <li>Em "Origens JavaScript autorizadas", adicione: <code>${esc(location.origin)}</code></li>
+          <li>Copie o "ID do cliente" (termina em apps.googleusercontent.com) e cole aqui.</li>
+        </ol>
+        <p class="hint">O app só pede permissão para os arquivos que ele mesmo cria no seu Drive.</p>
+      </details>
+    </details>
     ${est ? `<p class="hint">Espaço usado pelo app: ${(est.usage / 1048576).toFixed(1)} MB.</p>` : ''}
-    <p class="hint">SFX Studio · versão 6</p>`, { icon: 'gear' });
+    <p class="hint">SFX Studio · versão 7</p>`, { icon: 'gear' });
   $('#stTheme', s.body).onchange = (e) => { settings.theme = e.target.value; store.set('settings', settings); applyTheme(); s.close(); render(); };
   $('#stVib', s.body).onchange = (e) => { settings.vib = e.target.checked; store.set('settings', settings); };
   $('#stTour', s.body).onclick = () => { s.close(); tour(); };
+  const dsave = () => { settings.drive = { clientId: $('#stCid', s.body).value.trim(), folder: $('#stFolder', s.body).value.trim() || 'SFX Studio' }; store.set('settings', settings); };
+  $('#stDsave', s.body).onclick = () => { dsave(); $('#stDmsg', s.body).textContent = settings.drive.clientId ? 'Salvo. O botão do Drive aparece na exportação e no backup.' : 'Removido.'; };
+  $('#stDtest', s.body).onclick = async () => {
+    dsave();
+    const m = $('#stDmsg', s.body);
+    try { m.textContent = 'Abrindo o login do Google…'; await DR.upload([new File(['SFX Studio conectado.'], 'teste-sfx-studio.txt', { type: 'text/plain' })], settings.drive); m.textContent = `Funcionou! Um arquivo de teste foi criado na pasta "${settings.drive.folder}".`; }
+    catch (e) { m.textContent = e.message; }
+  };
 }
 const TOUR = [
   ['mic', 'Grave ou gere sons', 'Grave pelo microfone, importe arquivos ou crie sons retrô de jogo na aba Gerador.'],
@@ -786,27 +842,51 @@ async function openRecorder() {
   };
 }
 
-// ---------- gerador retrô ----------
-let gen = store.get('genP', null) || G.KINDS.coin[1](), genKind = store.get('genK', 'coin'), genBuf = null;
+// ---------- gerador ----------
+let gen = store.get('genP', null) || G.KINDS.coin[1](), genKind = store.get('genK', 'coin'), genBuf = null, genMode = store.get('genM', 'retro');
 const GDEF = Object.fromEntries(G.PARAMS.flatMap(([, ps]) => ps.map(([k, label, signed, hint]) => [k, { label, min: signed ? -1 : 0, max: 1, step: 0.01, def: G.defaults()[k], unit: '', hint }])));
 GDEF.sound_vol = { label: 'Volume', min: 0, max: 1, step: 0.01, def: 0.5, unit: '' };
+const AMBP = { dur: { label: 'Duração', min: 2, max: 30, step: 1, def: 8, unit: 's' }, intensity: { label: 'Intensidade', min: 0, max: 1, step: 0.01, def: 0.5, unit: '' }, tone: { label: 'Tom', min: 0, max: 1, step: 0.01, def: 0.5, unit: '' } };
+const UIP = { pitch: { label: 'Tom', min: -12, max: 12, step: 1, def: 0, unit: 'st' }, len: { label: 'Duração', min: 0.4, max: 2.5, step: 0.05, def: 1, unit: 'x' }, timbre: { label: 'Timbre', min: 0, max: 3, step: 1, def: 0, unit: '', labels: ['Seno', 'Triângulo', 'Quadrada', 'Serra'] } };
+const STP = { weight: { label: 'Peso', min: 0, max: 1, step: 0.01, def: 0.5, unit: '' }, hard: { label: 'Dureza', min: 0, max: 1, step: 0.01, def: 0.5, unit: '' } };
+const SYNP = {
+  wave: { label: 'Onda', min: 0, max: 3, step: 1, def: 3, unit: '', labels: P.SYN_WAVES }, octave: { label: 'Oitava', min: -2, max: 2, step: 1, def: 0, unit: '' },
+  attack: { label: 'Ataque', min: 1, max: 2000, step: 1, def: 5, unit: 'ms', log: 1 }, decay: { label: 'Decaimento', min: 10, max: 3000, step: 1, def: 200, unit: 'ms', log: 1 },
+  sustain: { label: 'Sustentação', min: 0, max: 1, step: 0.01, def: 0.6, unit: '' }, release: { label: 'Soltura', min: 10, max: 4000, step: 1, def: 250, unit: 'ms', log: 1 },
+  cutoff: { label: 'Filtro', min: 80, max: 18000, step: 1, def: 3000, unit: 'Hz', log: 1 }, reso: { label: 'Ressonância', min: 0.1, max: 20, step: 0.1, def: 2, unit: '' },
+  fenv: { label: 'Envelope do filtro', min: 0, max: 1, step: 0.01, def: 0.5, unit: '' }, detune: { label: 'Desafinação', min: 0, max: 50, step: 1, def: 8, unit: 'cents' },
+};
+const genState = { amb: { kind: 'rain', dur: 8, intensity: 0.5, tone: 0.5 }, ui: { kind: 'confirm', pitch: 0, len: 1, timbre: 0 }, steps: { kind: 'wood', weight: 0.5, hard: 0.5 }, syn: { ...P.synthDefaults() }, ...store.get('genS', {}) };
+const saveGenState = () => store.set('genS', genState);
+async function saveGenClip(buf, name, extra = {}) {
+  const clip = newClip(name, D.encodeWav(buf));
+  clip.dur = buf.duration; clip.thumb = thumbOf(buf); clip.tags = ['gerado'];
+  Object.assign(clip, extra.clip || {}); Object.assign(clip.edits, extra.edits || {});
+  await put('clips', clip);
+  return clip;
+}
+const GMODES = [['retro', 'retro', 'Retrô'], ['amb', 'amb', 'Ambiente'], ['ui', 'ui', 'Interface'], ['steps', 'steps', 'Passos'], ['syn', 'keyboard', 'Sintetizador']];
 function generator() {
   app.innerHTML = `
     <header class="top"><h1>Gerador</h1><button class="ibtn" id="setBtn" aria-label="Configurações">${ic('gear')}</button></header>
-    <p class="hint lead">Crie sons retrô de jogo com um toque. Cada toque gera uma versão nova; ajuste os controles e salve na Biblioteca para editar como qualquer som.</p>
+    <div class="gmodes" role="tablist">${GMODES.map(([m, i, l]) => `<button data-g="${m}" aria-pressed="${m === genMode}">${ic(i)}<span>${l}</span></button>`).join('')}</div>
+    <div id="gbody" class="gbody"></div>`;
+  $('#setBtn').onclick = openSettings;
+  $$('.gmodes button').forEach((b) => b.onclick = () => { stop(); genMode = b.dataset.g; store.set('genM', genMode); generator(); });
+  ({ retro: genRetro, amb: genAmb, ui: genUI, steps: genSteps, syn: genSynth }[genMode] || genRetro)($('#gbody'));
+}
+const savedMsg = (el, clip) => { el.innerHTML = `Salvo como "${esc(clip.name)}". <button class="tbtn sm" id="gOpen">Abrir no editor</button>`; $('#gOpen', el).onclick = () => editor(clip); toast(`Salvo como "${clip.name}"`); };
+function genRetro(el) {
+  el.innerHTML = `
+    <p class="hint">Sons de videogame antigo. Cada toque gera uma versão nova; ajuste os controles e salve.</p>
     <div class="kinds">${Object.entries(G.KINDS).map(([k, [l]]) => `<button class="kind ${k === genKind ? 'is' : ''}" data-k="${k}">${ic(k === 'random' ? 'dice' : k)}<span>${l}</span></button>`).join('')}</div>
     <div class="wavebox gen"><canvas id="gwv"></canvas></div>
-    <div class="genacts">
-      <button class="primary" id="gPlay">${ic('play')}Tocar</button>
-      <button id="gMut">${ic('mutate')}Variar</button>
-      <button id="gSave">${ic('plus')}Salvar</button>
-    </div>
+    <div class="genacts"><button class="primary" id="gPlay">${ic('play')}Tocar</button><button id="gMut">${ic('mutate')}Variar</button><button id="gSave">${ic('plus')}Salvar</button></div>
     <p class="hint" id="gInfo"></p>
     <section><h2>Forma de onda</h2><div class="seg" id="gWave">${G.WAVES.map((w, i) => `<button data-w="${i}" aria-pressed="${gen.wave_type === i}">${w}</button>`).join('')}</div>
       <div class="sliders">${sliderRow('sound_vol', GDEF.sound_vol, gen.sound_vol)}</div></section>
     ${G.PARAMS.map(([g, ps], gi) => `<details class="card" ${gi < 2 ? 'open' : ''}><summary>${g}</summary><div class="sliders">${ps.map(([k]) => sliderRow(k, GDEF[k], gen[k])).join('')}</div>
       <dl class="ghints">${ps.map(([, l, , h]) => `<dt>${l}</dt><dd>${h}</dd>`).join('')}</dl></details>`).join('')}`;
-  $('#setBtn').onclick = openSettings;
   const regen = (autoPlay = true) => {
     genBuf = G.synth(gen);
     store.set('genP', gen); store.set('genK', genKind);
@@ -816,28 +896,124 @@ function generator() {
   };
   let t;
   const soon = () => { clearTimeout(t); t = setTimeout(() => regen(true), 140); };
-  $$('.kind').forEach((b) => b.onclick = () => { genKind = b.dataset.k; gen = G.KINDS[genKind][1](); generator(); regen(true); });
+  $$('.kind', el).forEach((b) => b.onclick = () => { genKind = b.dataset.k; gen = G.KINDS[genKind][1](); genRetro(el); regen(true); });
   $('#gPlay').onclick = () => { if (!genBuf) regen(false); play(genBuf); };
-  $('#gMut').onclick = () => { gen = G.mutate(gen); generator(); regen(true); };
+  $('#gMut').onclick = () => { gen = G.mutate(gen); genRetro(el); regen(true); };
   $$('#gWave button').forEach((b) => b.onclick = () => { gen.wave_type = +b.dataset.w; $$('#gWave button').forEach((x) => x.setAttribute('aria-pressed', x === b)); soon(); });
-  bindSliders(app, GDEF, (k) => gen[k], (k, v) => { gen[k] = v; }, soon);
+  bindSliders(el, GDEF, (k) => gen[k], (k, v) => { gen[k] = v; }, soon);
   $('#gSave').onclick = async () => {
     if (!genBuf) regen(false);
     const n = (await all('clips')).filter((c) => c.gen).length + 1;
-    const clip = newClip(`${G.KINDS[genKind][0]} ${pad2(n)}`, D.encodeWav(genBuf));
-    clip.dur = genBuf.duration; clip.gen = clone(gen); clip.tags = ['gerado']; clip.thumb = thumbOf(genBuf);
-    await put('clips', clip);
-    toast(`Salvo como "${clip.name}"`);
-    $('#gInfo').innerHTML = `Salvo na Biblioteca como "${esc(clip.name)}". <button class="tbtn sm" id="gOpen">Abrir no editor</button>`;
-    $('#gOpen').onclick = () => editor(clip);
+    savedMsg($('#gInfo'), await saveGenClip(genBuf, `${G.KINDS[genKind][0]} ${pad2(n)}`, { clip: { gen: clone(gen) } }));
   };
   new ResizeObserver(() => genBuf && $('#gwv') && drawWave($('#gwv'), genBuf, { color: col().accent })).observe($('#gwv'));
   regen(false);
+}
+// tela genérica para geradores assíncronos (ambiente, interface, passos)
+function genSimple(el, { state, kinds, defs, intro, make, nameOf, extraSave, onSaved, autoplay = true, multi }) {
+  el.innerHTML = `
+    <p class="hint">${intro}</p>
+    <div class="kinds">${Object.entries(kinds).map(([k, l]) => `<button class="kind ${k === state.kind ? 'is' : ''}" data-k="${k}">${ic(k in P.AMB ? k : k in P.STEPS ? 'steps' : 'ui')}<span>${l}</span></button>`).join('')}</div>
+    <div class="wavebox gen"><canvas id="gwv"></canvas></div>
+    <div class="genacts"><button class="primary" id="gPlay">${ic('play')}Tocar</button><button id="gNew">${ic('dice')}Outro</button><button id="gSave">${ic('plus')}Salvar</button></div>
+    ${multi ? `<button class="wide" id="gMulti">${ic('dice')}${multi}</button>` : ''}
+    <p class="hint" id="gInfo"></p>
+    <section><div class="sliders">${Object.entries(defs).map(([k, p]) => sliderRow(k, p, state[k])).join('')}</div></section>`;
+  let buf = null, busy = 0;
+  const regen = async (autoPlay = autoplay) => {
+    const my = ++busy;
+    $('#gInfo').textContent = 'Gerando…';
+    const b = await make(state);
+    if (my !== busy || !$('#gwv')) return;
+    buf = b; genBuf = b;
+    drawWave($('#gwv'), b, { color: col().accent });
+    $('#gInfo').textContent = `${fmt(b.duration)} · pico ${db2(D.peakOf(b))} dB`;
+    if (autoPlay) play(b);
+  };
+  let t;
+  $$('.kind', el).forEach((b) => b.onclick = () => { state.kind = b.dataset.k; saveGenState(); $$('.kind', el).forEach((x) => x.classList.toggle('is', x === b)); regen(true); });
+  bindSliders(el, defs, (k) => state[k], (k, v) => { state[k] = v; saveGenState(); }, () => { clearTimeout(t); t = setTimeout(() => regen(true), 250); });
+  $('#gPlay').onclick = async () => { if (!buf) await regen(false); play(buf); };
+  $('#gNew').onclick = () => regen(true);
+  $('#gSave').onclick = async () => { if (!buf) await regen(false); const n = (await all('clips')).filter((c) => c.name.startsWith(nameOf(state))).length + 1; savedMsg($('#gInfo'), await saveGenClip(buf, `${nameOf(state)} ${pad2(n)}`, extraSave)); };
+  if (multi) $('#gMulti').onclick = async () => {
+    const ids = [], base = nameOf(state), n0 = (await all('clips')).filter((c) => c.name.startsWith(base)).length;
+    for (let i = 0; i < 5; i++) { const c = await saveGenClip(await make(state), `${base} ${pad2(n0 + i + 1)}`, extraSave); c.created = Date.now() + i; await put('clips', c); ids.push(c.id); }
+    onSaved && onSaved(ids);
+  };
+  new ResizeObserver(() => buf && $('#gwv') && drawWave($('#gwv'), buf, { color: col().accent })).observe($('#gwv'));
+  regen(false);
+}
+function genAmb(el) {
+  genSimple(el, { state: genState.amb, kinds: P.AMB, defs: AMBP, autoplay: true,
+    intro: 'Ambientes contínuos para fundo de fase. Já saem marcados como loop, com emenda suave.',
+    make: (s) => P.ambience(s.kind, s), nameOf: (s) => P.AMB[s.kind], extraSave: { edits: { loop: true, loopXf: 300 } } });
+}
+function genUI(el) {
+  genSimple(el, { state: genState.ui, kinds: P.UI, defs: UIP,
+    intro: 'Sons de menu e interface. Toque num tipo para ouvir; ajuste tom, duração e timbre.',
+    make: (s) => P.uiSound(s.kind, s), nameOf: (s) => `UI ${P.UI[s.kind].toLowerCase()}` });
+}
+function genSteps(el) {
+  genSimple(el, { state: genState.steps, kinds: P.STEPS, defs: STP,
+    intro: 'Passos em vários pisos. Cada toque sai um pouco diferente, como passos de verdade.',
+    make: (s) => P.footstep(s.kind, s), nameOf: (s) => `Passo ${P.STEPS[s.kind].toLowerCase()}`,
+    multi: 'Gerar 5 passos diferentes e salvar',
+    onSaved: (ids) => { selected = new Set(ids); toast('5 passos salvos e selecionados na Biblioteca'); setTab('lib'); render(); } });
+}
+function genSynth(el) {
+  const S = genState.syn, KEYS = [];
+  for (let m = 60; m < 84; m++) KEYS.push(m);
+  const black = (m) => [1, 3, 6, 8, 10].includes(m % 12);
+  const whites = KEYS.filter((m) => !black(m)), names = ['Dó', '', 'Ré', '', 'Mi', 'Fá', '', 'Sol', '', 'Lá', '', 'Si'];
+  el.innerHTML = `
+    <p class="hint">Toque as teclas para ouvir. Ligue "Gravar" para registrar uma sequência, depois salve como som.</p>
+    <div class="kb">${whites.map((m) => `<button class="wk" data-m="${m}"><span>${names[m % 12]}${m % 12 === 0 ? (m / 12 - 1) : ''}</span></button>`).join('')}
+      ${KEYS.filter(black).map((m) => { const wi = whites.filter((w) => w < m).length; return `<button class="bk" data-m="${m}" style="left:calc(${(wi / whites.length) * 100}% - ${100 / whites.length / 3}%)"></button>`; }).join('')}</div>
+    <div class="genacts"><button id="sRec" aria-pressed="false">${ic('rec')}Gravar</button><button id="sPlay">${ic('play')}Ouvir</button><button class="primary" id="sSave">${ic('plus')}Salvar</button></div>
+    <p class="hint" id="gInfo">Nada gravado. Salvar sem gravar guarda uma nota Dó.</p>
+    <section><div class="sliders">${Object.entries(SYNP).map(([k, p]) => sliderRow(k, p, S[k])).join('')}</div></section>`;
+  bindSliders(el, SYNP, (k) => S[k], (k, v) => { S[k] = v; saveGenState(); }, () => {});
+  let recOn = false, rec0 = 0, notes = [];
+  const live = new Map();
+  const WAV = ['sine', 'triangle', 'square', 'sawtooth'];
+  const start = (m) => {
+    const c = D.ctx(), t0 = c.currentTime, f = 440 * Math.pow(2, (m + S.octave * 12 - 69) / 12), a = S.attack / 1000, dcy = S.decay / 1000;
+    const g = c.createGain(); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.35, t0 + a); g.gain.linearRampToValueAtTime(0.35 * S.sustain, t0 + a + dcy);
+    const fl = c.createBiquadFilter(); fl.type = 'lowpass'; fl.Q.value = S.reso;
+    fl.frequency.setValueAtTime(S.cutoff, t0); fl.frequency.linearRampToValueAtTime(Math.min(18000, S.cutoff * (1 + S.fenv * 6)), t0 + a); fl.frequency.exponentialRampToValueAtTime(Math.max(60, S.cutoff), t0 + a + dcy + 0.01);
+    const oscs = (S.detune ? [-S.detune, S.detune] : [0]).map((det) => { const o = c.createOscillator(); o.type = WAV[Math.round(S.wave)]; o.frequency.value = f; o.detune.value = det; o.connect(fl); o.start(t0); return o; });
+    fl.connect(g).connect(c.destination);
+    live.set(m, { g, oscs, t: performance.now() });
+  };
+  const end = (m) => {
+    const v = live.get(m); if (!v) return;
+    live.delete(m);
+    const c = D.ctx(), t = c.currentTime, r = S.release / 1000;
+    v.g.gain.cancelScheduledValues(t); v.g.gain.setValueAtTime(v.g.gain.value, t); v.g.gain.linearRampToValueAtTime(0, t + r);
+    v.oscs.forEach((o) => o.stop(t + r + 0.05));
+    if (recOn) { notes.push({ m, t: (v.t - rec0) / 1000, d: Math.max(0.05, (performance.now() - v.t) / 1000) }); $('#gInfo').textContent = `${notes.length} nota(s) gravada(s).`; }
+  };
+  $$('.kb button', el).forEach((k) => {
+    const m = +k.dataset.m;
+    k.addEventListener('pointerdown', (e) => { e.preventDefault(); k.setPointerCapture(e.pointerId); k.classList.add('down'); start(m); });
+    const up = () => { k.classList.remove('down'); end(m); };
+    k.addEventListener('pointerup', up); k.addEventListener('pointercancel', up);
+  });
+  $('#sRec').onclick = (e) => {
+    recOn = !recOn; e.currentTarget.setAttribute('aria-pressed', recOn);
+    if (recOn) { notes = []; rec0 = performance.now(); $('#gInfo').textContent = 'Gravando: toque as teclas.'; }
+    else $('#gInfo').textContent = notes.length ? `${notes.length} nota(s) gravada(s). Toque em Ouvir ou Salvar.` : 'Nada gravado.';
+  };
+  const render1 = async () => { const ns = notes.length ? notes.map((n) => ({ ...n, t: n.t - notes[0].t })) : [{ m: 60, t: 0, d: 0.5 }]; return P.synthNotes(ns, S); };
+  $('#sPlay').onclick = async () => play(await render1());
+  $('#sSave').onclick = async () => { const b = await render1(); const n = (await all('clips')).filter((c) => c.name.startsWith('Sintetizador')).length + 1; savedMsg($('#gInfo'), await saveGenClip(b, `Sintetizador ${pad2(n)}`)); };
 }
 
 // ---------- editor ----------
 const views = new Map(), hists = new Map();
 let clipboard = null, edTab = 'edit';
+const LOOPXF = { label: 'Emenda', min: 0, max: 1000, step: 5, def: 80, unit: 'ms' };
 const FADE = { fadeIn: { label: 'Fade in', min: 0, max: 2000, step: 5, def: 0, unit: 'ms' }, fadeOut: { label: 'Fade out', min: 0, max: 2000, step: 5, def: 0, unit: 'ms' } };
 const SPLIT = { thr: { label: 'Sensibilidade', min: -60, max: -12, step: 1, def: -35, unit: 'dB' }, gap: { label: 'Pausa mínima', min: 40, max: 1500, step: 10, def: 200, unit: 'ms' } };
 const VAR = { n: { label: 'Quantidade', min: 2, max: 20, step: 1, def: 5, unit: '' }, p: { label: 'Tom ±', min: 0, max: 6, step: 0.1, def: 1, unit: 'st' }, v: { label: 'Volume ±', min: 0, max: 6, step: 0.5, def: 2, unit: 'dB' } };
@@ -861,7 +1037,8 @@ async function editor(clip, opt = {}) {
   let H = hists.get(clip.id);
   if (!H) { H = { stack: [snap()], i: 0 }; hists.set(clip.id, H); }
   let mode = opt.mode || 'trim', spec = opt.spec || mode === 'fix', loopOn = !!opt.loop, segs = null, envSel = -1, raf;
-  let sel = opt.sel || null, cur = opt.cur ?? null, rect = null, abFx = null;
+  let sel = opt.sel || null, cur = opt.cur ?? null, rect = null, abFx = null, vz = opt.vz || 1, stereo = !!opt.stereo && orig.numberOfChannels > 1;
+  clip.markers ||= [];
   const nfx = () => clip.chain.filter((f) => f.on).length;
 
   app.innerHTML = `
@@ -887,6 +1064,9 @@ async function editor(clip, opt = {}) {
       <div class="wavebox"><canvas id="wv" aria-label="Forma de onda"></canvas></div>
       <div class="zoomrow">
         <span class="hint" id="info"></span>
+        <button class="ibtn sm" id="mkAdd" aria-label="Adicionar marcador">${ic('marker')}</button>
+        <button class="ibtn sm vzb" id="vzBtn" aria-label="Zoom vertical">${vz}x</button>
+        ${orig.numberOfChannels > 1 ? `<button class="ibtn sm" id="stBtn" aria-label="Ver esquerdo e direito separados" aria-pressed="${stereo}">${ic('stereo')}</button>` : ''}
         <button class="ibtn sm" id="zOut" aria-label="Afastar">${ic('minus')}</button>
         <button class="ibtn sm" id="zIn" aria-label="Aproximar">${ic('plus')}</button>
         <button class="ibtn sm" id="zSel" aria-label="Zoom na seleção">${ic('focus')}</button>
@@ -919,7 +1099,7 @@ async function editor(clip, opt = {}) {
     updUndo();
   };
   const commit = () => { clearTimeout(commitT); commitT = setTimeout(commitNow, 450); $('#undo').disabled = false; };
-  const rerender = (extra = {}) => { const ps = $('#panel')?.scrollTop || 0; return editor(clip, { mode, spec, loop: loopOn, ...extra }).then(() => { const p = $('#panel'); if (p) p.scrollTop = ps; }); };
+  const rerender = (extra = {}) => { const ps = $('#panel')?.scrollTop || 0; return editor(clip, { mode, spec, loop: loopOn, vz, stereo, ...extra }).then(() => { const p = $('#panel'); if (p) p.scrollTop = ps; }); };
   const goTo = (k, word) => { const o = JSON.parse(H.stack[k]); clip.edits = o.edits; clip.chain = o.chain; H.i = k; put('clips', clip); rerender(); toast(word); };
   $('#undo').onclick = () => { if (commitT) commitNow(); if (H.i > 0) goTo(H.i - 1, 'Desfeito'); };
   $('#redo').onclick = () => { if (H.i < H.stack.length - 1) goTo(H.i + 1, 'Refeito'); };
@@ -1002,9 +1182,9 @@ async function editor(clip, opt = {}) {
     else if (mode === 'sel') {
       const canPaste = clipboard && clipboard.clipId === clip.id;
       const A = (id, i, l, dis) => `<button class="act" id="${id}" ${dis ? 'disabled' : ''}>${ic(i)}<span>${l}</span></button>`;
-      c.innerHTML = `<div class="acts-row">${A('aCut', 'cut', 'Recortar', !sel)}${A('aCopy', 'copy', 'Copiar', !sel)}${A('aPaste', 'paste', 'Colar', !canPaste || (!sel && cur == null))}${A('aDel', 'trash', 'Apagar', !sel)}${A('aSil', 'silence', 'Silenciar', !sel)}${A('aFx', 'fx', 'Efeito', !sel)}${A('aNew', 'newclip', 'Novo som', !sel)}</div>`;
+      c.innerHTML = `<div class="acts-row">${A('aCut', 'cut', 'Recortar', !sel)}${A('aCopy', 'copy', 'Copiar', !sel)}${A('aPaste', 'paste', 'Colar', !canPaste || (!sel && cur == null))}${A('aDel', 'trash', 'Apagar', !sel)}${A('aSil', 'silence', 'Silenciar', !sel)}${A('aNorm', 'norm', 'Normalizar', !sel)}${A('aFx', 'fx', 'Efeito', !sel)}${A('aNew', 'newclip', 'Novo som', !sel)}</div>`;
       $('#aCut').onclick = () => { doCopy(); doDelete(true); toast('Recortado'); };
-      $('#aCopy').onclick = doCopy; $('#aPaste').onclick = doPaste; $('#aDel').onclick = () => doDelete(); $('#aSil').onclick = doSilence; $('#aFx').onclick = doRegionFx; $('#aNew').onclick = doNewClip;
+      $('#aCopy').onclick = doCopy; $('#aPaste').onclick = doPaste; $('#aDel').onclick = () => doDelete(); $('#aSil').onclick = doSilence; $('#aNorm').onclick = () => { if (!sel) return; addOp({ type: 'norm', a: sel.a, b: sel.b }); toast('Trecho normalizado'); rerender({ sel }); }; $('#aFx').onclick = doRegionFx; $('#aNew').onclick = doNewClip;
     } else if (mode === 'env') {
       c.innerHTML = `<div class="ctxline"><span class="hint" id="envInfo"></span><button class="tbtn sm" id="envDel">${ic('trash')}Ponto</button><button class="tbtn sm" id="envClr">Limpar</button></div>`;
       $('#envDel').onclick = () => { if (envSel >= 0) { e.env.splice(envSel, 1); envSel = -1; dirty(); redraw(); } };
@@ -1024,7 +1204,7 @@ async function editor(clip, opt = {}) {
   const redraw = () => {
     if (!wv.isConnected) return;
     const pos = playing && playing.tag === 'orig' ? playPos() : null;
-    drawWave(wv, orig, { v0: V.v0, v1: V.v1, start: e.start, end: e.end, pos, spec, segs, ruler: true, dur, handles: mode === 'trim', env: mode === 'env' ? e.env : null, envSel, sel: mode === 'sel' ? sel : null, cur: mode === 'sel' && !sel ? cur : null, rect: mode === 'fix' ? rect : null });
+    drawWave(wv, orig, { v0: V.v0, v1: V.v1, start: e.start, end: e.end, pos, spec, segs, ruler: true, dur, handles: mode === 'trim', env: mode === 'env' ? e.env : null, envSel, sel: mode === 'sel' ? sel : null, cur: mode === 'sel' && !sel ? cur : null, rect: mode === 'fix' ? rect : null, vz, stereo, markers: clip.markers });
     $('#info').textContent = mode === 'sel' ? (sel ? `Seleção ${fmt(sel.b - sel.a)}` : 'Arraste para selecionar · toque para ouvir') : mode === 'fix' ? 'Grave embaixo, agudo em cima' : mode === 'env' ? 'Toque para criar, arraste para ajustar' : 'Arraste as alças · toque para ouvir';
     if (mode === 'trim') renderCtx();
     if (mode === 'env') {
@@ -1049,6 +1229,15 @@ async function editor(clip, opt = {}) {
   $('#zOut').onclick = () => zoomBy(2);
   $('#zSel').onclick = () => { const a = sel ? sel.a : e.start, b = sel ? sel.b : e.end, m = (b - a) * 0.08; V.v0 = a - m; V.v1 = b + m; clampV(); redraw(); };
   $('#zAll').onclick = () => { V.v0 = 0; V.v1 = dur; redraw(); };
+  $('#vzBtn').onclick = (ev) => { vz = vz >= 8 ? 1 : vz * 2; ev.currentTarget.textContent = vz + 'x'; redraw(); };
+  if ($('#stBtn')) $('#stBtn').onclick = (ev) => { stereo = !stereo; ev.currentTarget.setAttribute('aria-pressed', stereo); redraw(); };
+  $('#mkAdd').onclick = () => {
+    const t = playing?.tag === 'orig' ? playPos() : sel ? sel.a : cur ?? (V.v0 + V.v1) / 2;
+    const s = sheet('Novo marcador', `<p class="hint">Em ${fmt(t)}. Marcadores ajudam a achar partes de uma gravação longa.</p><div class="row"><input id="mkName" value="Marcador ${clip.markers.length + 1}" autocomplete="off"><button class="primary" id="mkOk">Salvar</button></div>`, { icon: 'marker' });
+    const ok = () => { clip.markers.push({ id: uid(), t, name: $('#mkName', s.body).value.trim() || 'Marcador' }); clip.markers.sort((x, y) => x.t - y.t); save(); s.close(); redraw(); if (edTab === 'edit') showPanel('edit'); toast('Marcador criado'); };
+    $('#mkOk', s.body).onclick = ok; $('#mkName', s.body).onkeydown = (e) => { if (e.key === 'Enter') ok(); };
+    setTimeout(() => $('#mkName', s.body)?.select(), 50);
+  };
   new ResizeObserver(redraw).observe(wv);
   setMode(mode);
 
@@ -1188,11 +1377,17 @@ async function editor(clip, opt = {}) {
         <label class="check"><input type="checkbox" id="nor" ${e.normalize ? 'checked' : ''}> Normalizar volume</label>
         <label class="check"><input type="checkbox" id="lp" ${e.loop ? 'checked' : ''}> Som em loop (Godot)</label>
       </div>
-      <p class="hint" id="lpHint" ${e.loop ? '' : 'hidden'}>O WAV sai marcado como loop. No Godot, mantenha "Loop Mode" em "Detect From WAV". Para OGG, ligue "Loop" na importação.</p>
+      <div class="loopbox" id="lpBox" ${e.loop ? '' : 'hidden'}>
+        <p class="hint">O WAV sai marcado como loop. No Godot, mantenha "Loop Mode" em "Detect From WAV". Para OGG, ligue "Loop" na importação.</p>
+        <div class="sliders">${sliderRow('loopXf', LOOPXF, e.loopXf || 0)}</div>
+        <div class="row"><button id="lpBest">${ic('loop')}Achar melhor ponto de emenda</button></div>
+        <p class="hint">A emenda funde o fim no começo para não ter clique. Use o botão ⟳ e "Com efeitos" para ouvir repetindo. Evite fades em sons de loop.</p>
+      </div>
       <div class="sliders">${sliderRow('fadeIn', FADE.fadeIn, e.fadeIn)}${sliderRow('fadeOut', FADE.fadeOut, e.fadeOut)}</div>
       <div class="row wrap"><button id="autoTrim">${ic('scissorsTrim')}Cortar silêncio</button><button id="resetTrim">Desfazer corte</button></div>
       ${e.ops.length ? `<div class="banner sm"><span>${e.ops.length} edição(ões) de trecho neste som.</span><button class="tbtn sm" id="clrOps">Remover todas</button></div>` : ''}
-      <label class="field">Tags <input id="tags" value="${esc(clip.tags.join(', '))}" placeholder="ex.: passos, floresta" autocomplete="off"></label>`,
+      <label class="field">Tags <input id="tags" value="${esc(clip.tags.join(', '))}" placeholder="ex.: passos, floresta" autocomplete="off"></label>
+      <div class="markers"><h3 class="gh">Marcadores</h3>${clip.markers.length ? clip.markers.map((m) => `<div class="row mk" data-id="${m.id}"><button class="ibtn sm mkgo" aria-label="Tocar a partir de ${esc(m.name)}">${ic('play')}</button><input value="${esc(m.name)}" aria-label="Nome do marcador"><span class="mkt">${fmt(m.t)}</span><button class="ibtn sm mkdel" aria-label="Apagar marcador">${ic('trash')}</button></div>`).join('') : `<p class="hint">Nenhum marcador. Use o botão ${ic('marker')} acima da onda.</p>`}</div>`,
     fx: () => `
       <div class="presetbar"><select id="preSel" aria-label="Preset"></select><button id="preApply">Aplicar</button><button class="ibtn" id="preMore" aria-label="Salvar ou gerenciar presets">${ic('plus')}</button></div>
       <div id="chain"></div>`,
@@ -1229,7 +1424,17 @@ async function editor(clip, opt = {}) {
     if (p === 'edit') {
       $('#rev').onchange = (ev) => { e.reverse = ev.target.checked; dirty(); };
       $('#nor').onchange = (ev) => { e.normalize = ev.target.checked; dirty(); };
-      $('#lp').onchange = (ev) => { e.loop = ev.target.checked; $('#lpHint').hidden = !e.loop; save(); commit(); };
+      $('#lp').onchange = (ev) => { e.loop = ev.target.checked; if (e.loop && e.loopXf == null) e.loopXf = 80; $('#lpBox').hidden = !e.loop; if (e.loop) showPanel('edit'); dirty(); };
+      if (e.loop) {
+        bindSliders($('#lpBox'), { loopXf: LOOPXF }, (k) => e[k] || 0, (k, v) => { e[k] = v; }, dirty);
+        $('#lpBest').onclick = () => { const ne = D.bestLoopEnd(orig, e.start, e.end); const d = ne - e.end; e.end = Math.min(dur, ne); redraw(); dirty(); toast(`Ponto de emenda ajustado (${d >= 0 ? '+' : ''}${(d * 1000).toFixed(0)} ms)`); };
+      }
+      $$('.mk', el).forEach((row) => {
+        const m = clip.markers.find((x) => x.id === row.dataset.id);
+        $('input', row).onchange = (ev) => { m.name = ev.target.value.trim() || m.name; save(); redraw(); };
+        $('.mkgo', row).onclick = () => { if (zoomed() && (m.t < V.v0 || m.t > V.v1)) { const s2 = V.v1 - V.v0; V.v0 = m.t - s2 / 4; V.v1 = V.v0 + s2; clampV(); } play(orig, { from: m.t, to: dur, tag: 'orig', onEnd: redraw }); startAnim(); };
+        $('.mkdel', row).onclick = () => { clip.markers = clip.markers.filter((x) => x !== m); save(); redraw(); showPanel('edit'); };
+      });
       bindSliders(el, FADE, (k) => e[k], (k, v) => { e[k] = v; }, dirty);
       $('#resetTrim').onclick = () => { e.start = 0; e.end = dur; redraw(); dirty(); };
       $('#autoTrim').onclick = () => { const t = autoTrim(orig); if (!t) { toast('Não achei som para cortar'); return; } e.start = t.start; e.end = t.end; redraw(); dirty(); toast('Silêncio cortado'); };
@@ -1339,7 +1544,7 @@ async function mixEditor(mix) {
   let byId = Object.fromEntries(clips.map((c) => [c.id, c]));
   const tb = new Map();
   mix.grid ??= 0.1;
-  mix.tracks.forEach((t) => { t.chain ||= []; t.trimS ||= 0; t.trimE ||= 0; t.fadeIn ||= 0; t.fadeOut ||= 0; });
+  mix.tracks.forEach((t) => { t.chain ||= []; t.trimS ||= 0; t.trimE ||= 0; t.fadeIn ||= 0; t.fadeOut ||= 0; t.auto ||= { vol: [], pan: [], cut: [] }; });
   const trackBuf = async (t) => {
     const c = byId[t.clipId]; if (!c) return null;
     const key = clipKey(c) + JSON.stringify([t.chain, t.trimS, t.trimE, t.fadeIn, t.fadeOut]), hit = tb.get(t.id);
@@ -1360,7 +1565,7 @@ async function mixEditor(mix) {
   const save = () => { clearTimeout(saveT); saveT = setTimeout(() => put('mixes', mix), 300); };
   const items = () => {
     const solo = mix.tracks.some((t) => t.solo);
-    return mix.tracks.filter((t) => bufOf(t) && !t.mute && (!solo || t.solo)).map((t) => ({ buf: bufOf(t), offset: t.offset, vol: t.vol, pan: t.pan }));
+    return mix.tracks.filter((t) => bufOf(t) && !t.mute && (!solo || t.solo)).map((t) => ({ buf: bufOf(t), offset: t.offset, vol: t.vol, pan: t.pan, auto: t.auto }));
   };
   const master = async () => { const it = items(); if (!it.length) return null; let b = await D.renderMix(it); if (mix.limit !== false) b = D.limit(b, -1, 60); return b; };
 
@@ -1469,6 +1674,11 @@ async function mixEditor(mix) {
           <button class="tog ${t.mute ? 'is' : ''}" data-a="mute" aria-label="Mudo">M</button><button class="tog ${t.solo ? 'is' : ''}" data-a="solo" aria-label="Solo">S</button>
           <button class="ibtn sm rm" aria-label="Remover camada">${ic('close')}</button></div>
         <div class="sliders">${['offset', 'vol', 'pan'].map((k) => sliderRow(k, d[k], t[k])).join('')}</div>
+        <details class="autobox"><summary>Automação${['vol', 'pan', 'cut'].some((k) => t.auto[k].length) ? ' <em class="dot"></em>' : ''}</summary>
+          <div class="seg autoseg"><button data-a="vol" aria-pressed="true">Volume</button><button data-a="pan" aria-pressed="false">Pan</button><button data-a="cut" aria-pressed="false">Filtro</button></div>
+          <canvas class="autocv"></canvas>
+          <div class="ctxline"><span class="hint ainfo">Toque para criar pontos ao longo da mixagem; arraste para ajustar.</span><button class="tbtn sm adel" disabled>${ic('trash')}Ponto</button><button class="tbtn sm aclr">Limpar</button></div>
+        </details>
         <details><summary>Corte e fades do bloco</summary><div class="sliders">${['trimS', 'trimE', 'fadeIn', 'fadeOut'].map((k) => sliderRow(k, d[k], t[k])).join('')}</div></details>
         <button class="ghost fxbtn">${ic('fx')}Efeitos da camada${n ? ` (${n})` : ''}</button>
       </div>`;
@@ -1485,12 +1695,55 @@ async function mixEditor(mix) {
       $$('.tog', card).forEach((b) => b.onclick = () => { t[b.dataset.a] = !t[b.dataset.a]; drawTracks(); save(); });
       $('.rm', card).onclick = () => { mix.tracks.splice(+card.dataset.i, 1); drawTracks(); save(); };
       $('.fxbtn', card).onclick = () => openFx(t);
+      autoUI(card, t, +card.dataset.i);
     });
     drawTL();
   };
+  const AUTO = { vol: ['Volume', (v) => `${Math.round(v * 200)}%`, 0.5], pan: ['Pan', (v) => panTxt(+(v * 2 - 1).toFixed(2)), 0.5], cut: ['Filtro', (v) => { const f = 100 * Math.pow(200, v); return f >= 1000 ? (f / 1000).toFixed(1) + ' kHz' : Math.round(f) + ' Hz'; }, 1] };
+  function autoUI(card, t, idx) {
+    const box = $('.autobox', card), cv = $('.autocv', box);
+    let param = 'vol', selI = -1, drag = null;
+    const pts = () => t.auto[param];
+    const draw = () => {
+      const s = setupCanvas(cv); if (!s) return;
+      const { x, w, h } = s, T = total(), b = bufOf(t);
+      x.fillStyle = cssv('--panel2'); x.fillRect(0, 0, w, h);
+      if (b) { x.fillStyle = cssv(COLORS[idx % COLORS.length]); x.globalAlpha = 0.18; x.fillRect((t.offset / T) * w, 0, (b.duration / T) * w, h); x.globalAlpha = 1; }
+      x.fillStyle = cssv('--line'); x.fillRect(0, h / 2, w, 1);
+      const P2 = (p) => [(p.t / T) * w, (1 - p.v) * h], ps = pts();
+      x.strokeStyle = cssv('--accent'); x.lineWidth = 2; x.beginPath();
+      if (!ps.length) { x.setLineDash([5, 5]); const y = (1 - AUTO[param][2]) * h; x.moveTo(0, y); x.lineTo(w, y); x.stroke(); x.setLineDash([]); }
+      else { x.moveTo(0, P2(ps[0])[1]); ps.forEach((p) => x.lineTo(...P2(p))); x.lineTo(w, P2(ps[ps.length - 1])[1]); x.stroke(); ps.forEach((p, i) => { const [px, py] = P2(p); x.beginPath(); x.arc(px, py, i === selI ? 9 : 6, 0, 7); x.fillStyle = i === selI ? cssv('--fg') : cssv('--accent'); x.fill(); }); }
+      const p = ps[selI];
+      $('.ainfo', box).textContent = p ? `${AUTO[param][0]}: ${AUTO[param][1](p.v)} em ${fmt(p.t)}` : `${AUTO[param][0]}: toque para criar pontos ao longo da mixagem.`;
+      $('.adel', box).disabled = !p;
+    };
+    box.addEventListener('toggle', () => box.open && draw());
+    $$('.autoseg button', box).forEach((bt) => bt.onclick = () => { param = bt.dataset.a; selI = -1; $$('.autoseg button', box).forEach((z) => z.setAttribute('aria-pressed', z === bt)); draw(); });
+    const at = (ev) => { const r = cv.getBoundingClientRect(); return { t: Math.max(0, ((ev.clientX - r.left) / r.width) * total()), v: Math.max(0, Math.min(1, 1 - (ev.clientY - r.top) / r.height)), x: ev.clientX - r.left, y: ev.clientY - r.top, w: r.width, h: r.height }; };
+    cv.onpointerdown = (ev) => {
+      cv.setPointerCapture(ev.pointerId);
+      const q = at(ev), T = total();
+      const hit = pts().findIndex((p) => Math.hypot((p.t / T) * q.w - q.x, (1 - p.v) * q.h - q.y) < 22);
+      drag = { i: hit, moved: false, x0: q.x }; if (hit >= 0) { selI = hit; draw(); }
+    };
+    cv.onpointermove = (ev) => {
+      if (!drag || drag.i < 0) return;
+      const q = at(ev); if (Math.abs(q.x - drag.x0) > 3) drag.moved = true;
+      const ps = pts(), p = ps[drag.i], lo = ps[drag.i - 1]?.t ?? 0, hi = ps[drag.i + 1]?.t ?? Infinity;
+      p.t = +Math.max(lo + 0.001, Math.min(hi - 0.001, q.t)).toFixed(3); p.v = +q.v.toFixed(3); drag.moved = true; draw();
+    };
+    cv.onpointerup = (ev) => {
+      if (!drag) return;
+      if (drag.i < 0) { const q = at(ev), p = { t: +q.t.toFixed(3), v: +q.v.toFixed(3) }; pts().push(p); pts().sort((m, n) => m.t - n.t); selI = pts().indexOf(p); }
+      drag = null; save(); draw();
+    };
+    $('.adel', box).onclick = () => { if (selI >= 0) { pts().splice(selI, 1); selI = -1; save(); draw(); } };
+    $('.aclr', box).onclick = () => { t.auto[param] = []; selI = -1; save(); draw(); };
+  }
   drawTracks();
   const addTrack = async (clipId, extra = {}) => {
-    const t = { id: uid(), clipId, offset: 0, vol: 1, pan: 0, mute: false, solo: false, chain: [], trimS: 0, trimE: 0, fadeIn: 0, fadeOut: 0, ...extra };
+    const t = { id: uid(), clipId, offset: 0, vol: 1, pan: 0, mute: false, solo: false, chain: [], trimS: 0, trimE: 0, fadeIn: 0, fadeOut: 0, auto: { vol: [], pan: [], cut: [] }, ...extra };
     await trackBuf(t);
     mix.tracks.push(t);
     drawTracks(); save();
