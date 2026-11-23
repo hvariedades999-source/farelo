@@ -429,3 +429,10 @@ body.dropping::after { content: "Solte para importar"; position: fixed; inset: 1
   .list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @keyframes side { from { transform: translateX(40px); opacity: 0; } }
+
+.sysrec { min-height: 64px; border-radius: 16px; background: color-mix(in srgb, var(--rec) 14%, var(--panel)); border-color: color-mix(in srgb, var(--rec) 45%, transparent); }
+.hero:has(.sysrec) { grid-template-columns: 1fr 1fr; }
+.hero:has(.sysrec) > .btn { grid-column: 1 / -1; }
+#rsrc { width: 100%; }
+#rsrc button { gap: 6px; }
+@media (min-width: 1000px) { .hero:has(.sysrec) { grid-template-columns: 240px 240px auto 1fr; } .hero:has(.sysrec) > .btn { grid-column: auto; } }

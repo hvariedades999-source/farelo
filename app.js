@@ -750,7 +750,7 @@ document.addEventListener('keydown', (e) => {
   keyHandler && keyHandler(e);
 });
 const SHORTCUTS = [
-  ['Geral', [['?', 'Mostrar esta lista'], ['Esc', 'Fechar janela ou gaveta'], ['F1 / F2 / F3 / F4', 'Biblioteca, Gerador, Mixagens, Arquivos'], ['R', 'Gravar (na Biblioteca)'], ['Espaço', 'Tocar / parar']]],
+  ['Geral', [['?', 'Mostrar esta lista'], ['Esc', 'Fechar janela ou gaveta'], ['F1 / F2 / F3 / F4', 'Biblioteca, Gerador, Mixagens, Arquivos'], ['R', 'Gravar (na Biblioteca)'], ['Shift + R', 'Gravar o som do computador'], ['Espaço', 'Tocar / parar']]],
   ['Editor', [['Espaço', 'Tocar com efeitos / parar'], ['Shift + Espaço', 'Tocar o original'], ['L', 'Liga/desliga o loop'], ['1 2 3 4', 'Cortar, Trecho, Volume, Reparar'], ['Ctrl + Z / Ctrl + Y', 'Desfazer / refazer'], ['Ctrl + A', 'Selecionar tudo (modo Trecho)'], ['Ctrl + C / X / V', 'Copiar, recortar, colar trecho'], ['Delete', 'Apagar trecho selecionado'], ['M', 'Adicionar marcador'], ['+ / - / 0', 'Aproximar, afastar, ver tudo'], ['Roda do mouse', 'Zoom; com Shift, rolar para os lados'], ['E', 'Abrir a aba Exportar'], ['Ctrl + S', 'Salvar no projeto Godot (programa de Windows)'], ['Backspace', 'Voltar para a Biblioteca']]],
   ['Biblioteca e Arquivos', [['↑ / ↓', 'Escolher som'], ['Espaço', 'Ouvir'], ['Enter', 'Abrir no editor / importar'], ['Ctrl + A', 'Marcar todos']]],
 ];
@@ -801,6 +801,7 @@ async function library() {
     ${DESK && clips.some(godotChanged) ? `<div class="banner"><span>${clips.filter(godotChanged).length} som(ns) mudaram desde que foram salvos no projeto Godot.</span><button id="reAll">${ic('export')}Atualizar no projeto</button></div>` : ''}
     <div class="hero">
       <button class="recbig" id="btnRec">${ic('mic')}Gravar</button>
+      ${canSys() ? `<button class="sysrec" id="btnSys" title="Grava o som que está tocando no computador (Shift+R)">${ic('gain')}Gravar som do PC</button>` : ''}
       <label class="btn ghost" title="Você também pode arrastar arquivos para a janela">${ic('download')}Importar<input type="file" accept="audio/*,video/*" id="imp" multiple hidden></label>
     </div>
     ${clips.length ? `
@@ -847,7 +848,8 @@ async function library() {
     </details>`;
 
   $('#setBtn').onclick = openSettings;
-  $('#btnRec').onclick = openRecorder;
+  $('#btnRec').onclick = () => openRecorder('mic');
+  if ($('#btnSys')) $('#btnSys').onclick = () => openRecorder('sys');
   $('#imp').onchange = (e) => importFiles([...e.target.files]);
   if ($('#reAll')) $('#reAll').onclick = async (ev) => {
     ev.currentTarget.disabled = true;
@@ -867,7 +869,7 @@ async function library() {
   const curPick = (i) => { cur = Math.max(0, Math.min(lis.length - 1, i)); lis.forEach((l, k) => l.classList.toggle('cur', k === cur)); lis[cur]?.scrollIntoView({ block: 'nearest' }); };
   keyHandler = (ev) => {
     const k = ev.key;
-    if ((k === 'r' || k === 'R') && !ev.ctrlKey) { ev.preventDefault(); openRecorder(); }
+    if ((k === 'r' || k === 'R') && !ev.ctrlKey) { ev.preventDefault(); openRecorder(ev.shiftKey && canSys() ? 'sys' : 'mic'); }
     else if (k === 'ArrowDown' || k === 'ArrowUp') { ev.preventDefault(); curPick(cur + (k === 'ArrowDown' ? 1 : -1)); }
     else if (k === ' ' && lis.length) { ev.preventDefault(); if (playing) stop(); else { if (cur < 0) curPick(0); $('.play', lis[cur]).click(); } }
     else if (k === 'Enter' && cur >= 0) $('.open', lis[cur]).click();
@@ -1104,33 +1106,45 @@ function meterLoop(an, ov, isRec, onPeak) {
   return () => cancelAnimationFrame(raf);
 }
 const METER = `<canvas class="rwv"></canvas><div class="meter" aria-hidden="true"><i class="mbar"></i><b class="mpk"></b></div><div class="meterlbl"><span class="mdb">-∞ dB</span><span class="clipwarn" hidden>Estourou! Afaste o celular</span></div>`;
-async function openRecorder() {
+const canSys = () => !!navigator.mediaDevices?.getDisplayMedia && (DESK || !/Android|iPhone|iPad/i.test(navigator.userAgent));
+// Captura o som que está tocando no computador (vídeo, jogo, navegador…)
+async function getSystemAudio() {
+  const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, systemAudio: 'include' });
+  s.getVideoTracks().forEach((t) => t.stop());
+  const tracks = s.getAudioTracks();
+  if (!tracks.length) throw Object.assign(new Error(DESK ? 'O Windows não entregou o som do computador.' : 'Nenhum som foi compartilhado. Na janela do navegador, marque "Compartilhar áudio do sistema" ou escolha uma aba com som.'), { name: 'NoAudio' });
+  return new MediaStream(tracks);
+}
+async function openRecorder(source = 'mic') {
+  const sys = source === 'sys';
   const opts = { ns: false, cd: false, trim: true, ...store.get('recOpts', {}) };
   const ov = document.createElement('div');
   ov.className = 'ovl';
   ov.innerHTML = `<div class="recbox">${METER}
     <div class="timer" id="rt">0.0 s</div>
     <button class="recbtn" id="rb" aria-label="Gravar"><span></span></button>
-    <p class="msg" id="rm">Toque no botão para começar.</p>
+    <p class="msg" id="rm">${sys ? 'Deixe o vídeo ou o som pronto para tocar e toque no botão. Tudo o que sair nas caixas de som ou no fone será gravado.' : 'Toque no botão para começar.'}</p>
+    ${canSys() ? `<div class="seg" id="rsrc"><button data-s="mic" aria-pressed="${!sys}">${ic('mic')}Microfone</button><button data-s="sys" aria-pressed="${sys}">${ic('gain')}Som do computador</button></div>` : ''}
     <div class="recopts">
       <label class="check"><input type="checkbox" id="rcd" ${opts.cd ? 'checked' : ''}> Contagem 3, 2, 1</label>
       <label class="check"><input type="checkbox" id="rtr" ${opts.trim ? 'checked' : ''}> Cortar silêncio no início e no fim</label>
-      <label class="check"><input type="checkbox" id="rns" ${opts.ns ? 'checked' : ''}> Filtro de ruído do celular</label>
-      <p class="hint">O filtro do celular é bom para vozes em lugar barulhento. Para efeitos sonoros, deixe desligado.</p>
+      ${sys ? `<p class="hint">Dica: pause outros sons do computador antes. ${DESK ? 'O som que o próprio Farelo tocar também entra na gravação.' : 'O navegador vai perguntar o que compartilhar: escolha a tela inteira com "áudio do sistema" ou a aba do vídeo com "compartilhar áudio".'}</p>` : `<label class="check"><input type="checkbox" id="rns" ${opts.ns ? 'checked' : ''}> Filtro de ruído do celular</label>
+      <p class="hint">O filtro do celular é bom para vozes em lugar barulhento. Para efeitos sonoros, deixe desligado.</p>`}
     </div>
     <button class="ghost" id="rc">Cancelar</button></div>`;
   document.body.appendChild(ov);
   let stream, rec, stopMeter, chunks = [], t0, cancelled = false, cdTimer, maxPk = 0, clipped = false, tim;
   const cleanup = () => { stopMeter?.(); clearInterval(cdTimer); clearInterval(tim); stream?.getTracks().forEach((t) => t.stop()); };
   $('#rc', ov).onclick = () => { cancelled = true; if (rec?.state === 'recording') rec.stop(); cleanup(); ov.remove(); };
+  $$('#rsrc button', ov).forEach((b) => b.onclick = () => { if (stream) return; ov.remove(); openRecorder(b.dataset.s); });
   $('#rb', ov).onclick = async () => {
     if (rec?.state === 'recording') { rec.stop(); return; }
     if (stream) return;
-    Object.assign(opts, { ns: $('#rns', ov).checked, cd: $('#rcd', ov).checked, trim: $('#rtr', ov).checked });
+    Object.assign(opts, { ns: $('#rns', ov)?.checked ?? opts.ns, cd: $('#rcd', ov).checked, trim: $('#rtr', ov).checked });
     store.set('recOpts', opts);
-    $$('.recopts input', ov).forEach((i) => i.disabled = true);
-    try { stream = await getMic(opts.ns); }
-    catch (e) { stream = null; $$('.recopts input', ov).forEach((i) => i.disabled = false); $('#rm', ov).textContent = micError(e); return; }
+    $$('.recopts input, #rsrc button', ov).forEach((i) => i.disabled = true);
+    try { stream = sys ? await getSystemAudio() : await getMic(opts.ns); }
+    catch (e) { stream = null; $$('.recopts input, #rsrc button', ov).forEach((i) => i.disabled = false); $('#rm', ov).textContent = sys ? (e.name === 'NotAllowedError' ? 'Captura cancelada ou bloqueada.' : 'Não consegui capturar o som do computador: ' + e.message) : micError(e); return; }
     const ac = D.ctx(), an = ac.createAnalyser(); an.fftSize = 2048;
     const srcNode = ac.createMediaStreamSource(stream); srcNode.connect(an);
     stopMeter = meterLoop(an, ov, () => rec?.state === 'recording', (pk) => { maxPk = Math.max(maxPk, pk); if (pk >= 0.985 && !clipped) { clipped = true; $('.clipwarn', ov).hidden = false; } });
@@ -1141,7 +1155,8 @@ async function openRecorder() {
       if (cancelled) return;
       $('#rm', ov).textContent = 'Salvando…';
       const n = (await all('clips')).length + 1;
-      const clip = newClip(`Gravação ${pad2(n)}`, new Blob(chunks, { type: rec.mimeType }));
+      const clip = newClip(`${sys ? 'Captura' : 'Gravação'} ${pad2(n)}`, new Blob(chunks, { type: rec.mimeType }));
+      if (sys) clip.tags = ['capturado'];
       try {
         const buf = await decode(clip);
         clip.dur = buf.duration;

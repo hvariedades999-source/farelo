@@ -1,5 +1,5 @@
 // Farelo para Windows: janela, acesso a arquivos, abrir com duplo clique e atualização automática.
-const { app, BrowserWindow, protocol, net, ipcMain, dialog, shell, session, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, protocol, net, ipcMain, dialog, shell, session, Menu, nativeImage, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -45,9 +45,13 @@ function start() {
     if (!fp.startsWith(WEB)) return new Response('Proibido', { status: 403 });
     return net.fetch(pathToFileURL(fp).toString());
   });
-  const allowed = new Set(['media', 'speaker-selection', 'clipboard-sanitized-write', 'fullscreen']);
+  const allowed = new Set(['media', 'display-capture', 'speaker-selection', 'clipboard-sanitized-write', 'fullscreen']);
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(allowed.has(perm)));
   session.defaultSession.setPermissionCheckHandler((_wc, perm) => allowed.has(perm));
+  // Som do computador: o Windows entrega o áudio de tudo o que está tocando (loopback)
+  session.defaultSession.setDisplayMediaRequestHandler((_req, cb) => {
+    desktopCapturer.getSources({ types: ['screen'] }).then((srcs) => cb({ video: srcs[0], audio: 'loopback' })).catch(() => cb({}));
+  });
   Menu.setApplicationMenu(null);
 
   win = new BrowserWindow({

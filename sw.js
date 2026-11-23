@@ -1,6 +1,6 @@
 // Guarda o app no celular para funcionar sem internet. Sempre tenta a versão nova primeiro.
-const CACHE = 'farelo-v9';
-const ASSETS = ['./', 'index.html', 'style.css?v=9', 'app.js?v=9', 'dsp.js', 'icons.js', 'sfxr.js', 'procgen.js', 'drive.js', 'manifest.json', 'icon.svg',
+const CACHE = 'farelo-v10';
+const ASSETS = ['./', 'index.html', 'style.css?v=10', 'app.js?v=10', 'dsp.js', 'icons.js', 'sfxr.js', 'procgen.js', 'drive.js', 'manifest.json', 'icon.svg',
   'vendor/lame.min.js', 'vendor/OggVorbisEncoder.min.js', 'vendor/OggVorbisEncoder.min.js.mem'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {

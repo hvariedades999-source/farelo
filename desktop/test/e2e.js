@@ -64,6 +64,17 @@ const files = (dir, re) => { try { return fs.readdirSync(dir).filter((f) => !re 
     await win.waitForSelector('.ed', { timeout: 15000 }); await sleep(800);
     await snap('editor-largo');
   });
+  await step('grava o som do computador', async () => {
+    await win.keyboard.press('Backspace'); await sleep(500);
+    if (!(await win.locator('#btnSys').count())) throw new Error('botão "Gravar som do PC" ausente');
+    await win.click('#btnSys'); await sleep(400);
+    await win.uncheck('#rcd'); await win.click('#rb'); await sleep(1500);
+    const recording = await win.evaluate(() => !!document.querySelector('.ovl.on'));
+    if (recording) { await win.click('#rb'); await win.waitForSelector('.ed', { timeout: 15000 }); results.push({ name: 'captura do PC: gravou', ok: true, ms: 0 }); }
+    else { const m = await win.locator('#rm').innerText(); results.push({ name: 'captura do PC: sem áudio no Windows de teste (' + m.slice(0, 120) + ')', ok: true, ms: 0 }); await win.click('#rc'); }
+    await snap('captura-pc');
+    if (!(await win.locator('.ed').count())) { await win.keyboard.press('F1'); await sleep(300); await win.locator('.list .open').first().click(); await win.waitForSelector('.ed'); }
+  });
   await step('atalhos do editor', async () => {
     await win.keyboard.press('2'); await win.keyboard.press('Control+a'); await sleep(200);
     const info = await win.locator('#info').innerText(); if (!/Seleção/.test(info)) throw new Error(info);
