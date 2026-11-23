@@ -52,6 +52,15 @@ jobs:
         with:
           name: testes-${{ github.run_number }}
           path: desktop/test-results
+      - name: Guardar capturas no ramo capturas
+        if: always()
+        shell: bash
+        run: |
+          cd test-results
+          git init -q -b capturas
+          git config user.name "Farelo CI"; git config user.email "ci@farelo.local"
+          git add -A && git commit -qm "Capturas do teste ${{ github.run_number }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" capturas
       - name: Publicar versão
         if: success()
         shell: bash

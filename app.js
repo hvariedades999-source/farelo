@@ -781,7 +781,7 @@ function setTab(t) { tab = t; $$('.tabs button').forEach((b) => b.setAttribute('
 function nav(t) { stop(); setTab(t); render(); }
 $$('.tabs button').forEach((b) => b.onclick = () => nav(b.dataset.t));
 function screen(mode) { document.body.classList.toggle('ed-mode', mode === 'ed'); }
-function render() { screen('main'); keyHandler = null; window.scrollTo(0, 0); ({ mix: mixList, gen: generator, files: DESK ? browser : null }[tab] || library)(); }
+function render() { screen('main'); keyHandler = null; document.title = 'Farelo'; window.scrollTo(0, 0); ({ mix: mixList, gen: generator, files: DESK ? browser : null }[tab] || library)(); }
 
 // ---------- biblioteca ----------
 let selected = new Set(), query = '', tagFilter = '';
@@ -1443,7 +1443,8 @@ async function editor(clip, opt = {}) {
   const updFxBadge = () => { const n = nfx(), btn = $('.edtabs [data-p=fx]'); if (!btn) return; $('em', btn)?.remove(); if (n) btn.insertAdjacentHTML('beforeend', `<em>${n}</em>`); };
   const dirty = () => { save(); commit(); live(); updFxBadge(); };
   $('#back').onclick = () => { stop(); if (commitT) commitNow(); render(); };
-  $('#cname').oninput = (ev) => { clip.name = ev.target.value || 'Sem nome'; save(); };
+  document.title = `${clip.name} — Farelo`;
+  $('#cname').oninput = (ev) => { clip.name = ev.target.value || 'Sem nome'; document.title = `${clip.name} — Farelo`; save(); };
 
   // ----- operações de trecho -----
   const addOp = (op, shift) => {
@@ -1960,7 +1961,7 @@ async function mixEditor(mix) {
     </div>
     <div class="tlbox"><canvas id="tl" aria-label="Linha do tempo. Arraste os blocos para mudar o início."></canvas></div>
     <div class="transport two"><button id="mp" class="primary">${ic('play')}Ouvir mixagem</button><button id="ms" class="ibtn" aria-label="Parar">${ic('stop')}</button></div>
-    <p class="hint" id="mInfo">Arraste os blocos na linha do tempo. Eles grudam na grade.</p>
+    <p class="hint" id="mInfo">Arraste os blocos para mudar o início; arraste a borda de um bloco para cortar o começo ou o fim. Espaço toca.</p>
     <section><h2>Camadas</h2><div id="tracks"></div>
       ${clips.length ? `<div class="row add"><select id="addClip" aria-label="Som">${clips.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select><button id="addT">${ic('plus')}Camada</button></div>` : '<p class="hint">Grave ou importe sons na Biblioteca primeiro.</p>'}
     </section>
@@ -2013,22 +2014,37 @@ async function mixEditor(mix) {
   new ResizeObserver(drawTL).observe(tl);
   let dragT = null;
   const snapT = (v) => (mix.grid ? Math.round(v / mix.grid) * mix.grid : Math.round(v * 100) / 100);
+  const edgeAt = (ev) => {
+    const r = tl.getBoundingClientRect(), i = Math.floor((ev.clientY - r.top - 20) / ROW), t = mix.tracks[i], b = t && bufOf(t);
+    if (!b) return { t };
+    const x = ev.clientX - r.left, bx = t.offset * scale, ex = bx + b.duration * scale;
+    return { t, edge: Math.abs(x - bx) < 8 ? 'l' : Math.abs(x - ex) < 8 ? 'r' : null };
+  };
   tl.onpointerdown = (ev) => {
-    const r = tl.getBoundingClientRect(), i = Math.floor((ev.clientY - r.top - 20) / ROW), t = mix.tracks[i];
+    const { t, edge } = edgeAt(ev);
     if (!t) return;
-    dragT = { t, x0: ev.clientX, o0: t.offset };
+    dragT = { t, x0: ev.clientX, o0: t.offset, edge, s0: t.trimS, e0: t.trimE, full: tb.get(t.id)?.full || 1 };
     tl.setPointerCapture(ev.pointerId);
   };
   tl.onpointermove = (ev) => {
-    if (!dragT) return;
-    const nv = Math.max(0, +snapT(dragT.o0 + (ev.clientX - dragT.x0) / scale).toFixed(3));
-    if (nv !== dragT.t.offset && mix.grid && settings.vib) navigator.vibrate?.(4);
-    dragT.t.offset = nv;
+    if (!dragT) { const { edge } = edgeAt(ev); tl.style.cursor = edge ? 'ew-resize' : 'grab'; return; }
+    const d = (ev.clientX - dragT.x0) / scale, t = dragT.t;
+    if (dragT.edge === 'l') {
+      const ns = Math.max(0, Math.min(dragT.full - dragT.e0 - 0.02, dragT.s0 + d));
+      t.trimS = +ns.toFixed(3); t.offset = Math.max(0, +(dragT.o0 + (ns - dragT.s0)).toFixed(3));
+    } else if (dragT.edge === 'r') {
+      t.trimE = +Math.max(0, Math.min(dragT.full - dragT.s0 - 0.02, dragT.e0 - d)).toFixed(3);
+    } else {
+      const nv = Math.max(0, +snapT(dragT.o0 + d).toFixed(3));
+      if (nv !== t.offset && mix.grid && settings.vib) navigator.vibrate?.(4);
+      t.offset = nv;
+    }
+    if (dragT.edge) { clearTimeout(dragT.rt); dragT.rt = setTimeout(async () => { await trackBuf(t); drawTL(); }, 60); }
     drawTL();
-    const card = $(`#tracks .trk[data-i="${mix.tracks.indexOf(dragT.t)}"]`);
-    if (card) { const row = $('.prm[data-k=offset]', card), inp = $('input', row); inp.max = Math.max(+inp.max, Math.ceil(nv + 1)); inp.value = nv; $('.val', row).textContent = fmt(nv); }
+    const card = $(`#tracks .trk[data-i="${mix.tracks.indexOf(t)}"]`);
+    if (card) for (const k of ['offset', 'trimS', 'trimE']) { const row = $(`.prm[data-k=${k}]`, card); if (!row) continue; const inp = $('input', row); if (k === 'offset') inp.max = Math.max(+inp.max, Math.ceil(t.offset + 1)); inp.value = t[k]; $('.val', row).textContent = fmt(t[k]); }
   };
-  tl.onpointerup = tl.onpointercancel = () => { if (dragT) { dragT = null; save(); } };
+  tl.onpointerup = tl.onpointercancel = async () => { if (dragT) { const t = dragT.t, ed = dragT.edge; dragT = null; if (ed) { await trackBuf(t); drawTL(); } save(); } };
 
   const panTxt = (v) => (v == 0 ? 'centro' : v < 0 ? 'E ' + Math.round(-v * 100) : 'D ' + Math.round(v * 100));
   const openFx = (t) => {
