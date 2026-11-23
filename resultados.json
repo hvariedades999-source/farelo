@@ -1,0 +1,141 @@
+{
+  "results": [
+    {
+      "name": "abre e mostra o tutorial",
+      "ok": true,
+      "ms": 99
+    },
+    {
+      "name": "é o programa de Windows",
+      "ok": true,
+      "ms": 8
+    },
+    {
+      "name": "gera e salva sons retrô",
+      "ok": true,
+      "ms": 3511
+    },
+    {
+      "name": "biblioteca salva como arquivos no disco",
+      "ok": true,
+      "ms": 801
+    },
+    {
+      "name": "ambiente, interface, passos e sintetizador geram som",
+      "ok": true,
+      "ms": 7072
+    },
+    {
+      "name": "grava com microfone (simulado)",
+      "ok": true,
+      "ms": 4485
+    },
+    {
+      "name": "captura do PC: gravou",
+      "ok": true,
+      "ms": 0
+    },
+    {
+      "name": "grava o som do computador",
+      "ok": true,
+      "ms": 2626
+    },
+    {
+      "name": "atalhos do editor",
+      "ok": true,
+      "ms": 1482
+    },
+    {
+      "name": "efeito com gaveta lateral",
+      "ok": true,
+      "ms": 1336
+    },
+    {
+      "name": "salva no projeto Godot (Ctrl+S)",
+      "ok": true,
+      "ms": 2590
+    },
+    {
+      "name": "reexporta depois de mudar",
+      "ok": true,
+      "ms": 2591
+    },
+    {
+      "name": "pacote Godot .tres em lote",
+      "ok": true,
+      "ms": 4812
+    },
+    {
+      "name": "navegador de arquivos",
+      "ok": true,
+      "ms": 2718
+    },
+    {
+      "name": "abrir arquivo pelo Windows (duplo clique)",
+      "ok": true,
+      "ms": 94
+    },
+    {
+      "name": "mixagem com camadas",
+      "ok": true,
+      "ms": 3612
+    },
+    {
+      "name": "música: área separada e modelo",
+      "ok": true,
+      "ms": 2046
+    },
+    {
+      "name": "música: toca e o relógio anda",
+      "ok": true,
+      "ms": 3157
+    },
+    {
+      "name": "música: piano roll e teclado do PC",
+      "ok": true,
+      "ms": 2969
+    },
+    {
+      "name": "música: bateria por passos",
+      "ok": true,
+      "ms": 1386
+    },
+    {
+      "name": "música: assistente de acordes",
+      "ok": true,
+      "ms": 1529
+    },
+    {
+      "name": "música: exporta em loop para o Godot",
+      "ok": true,
+      "ms": 12441
+    },
+    {
+      "name": "música: salva no disco e volta",
+      "ok": true,
+      "ms": 1678
+    },
+    {
+      "name": "configurações e atalhos",
+      "ok": true,
+      "ms": 1410
+    },
+    {
+      "name": "tema claro",
+      "ok": true,
+      "ms": 1096
+    },
+    {
+      "name": "janela estreita",
+      "ok": true,
+      "ms": 866
+    },
+    {
+      "name": "biblioteca volta depois de reabrir",
+      "ok": true,
+      "ms": 1063
+    }
+  ],
+  "errors": [],
+  "failed": 0
+}
