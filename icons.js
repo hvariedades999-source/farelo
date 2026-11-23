@@ -52,6 +52,7 @@ const P = {
   grid: '<path d="M3 3h18v18H3zM3 9h18M3 15h18M9 3v18M15 3v18"/>',
   rec: '<circle cx="12" cy="12" r="7" fill="currentColor" stroke="none"/>',
   sort: '<path d="M3 6h13M3 12h9M3 18h5"/><path d="M18 9V21M15 18l3 3 3-3"/>',
+  grip: '<circle cx="9" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.4" fill="currentColor" stroke="none"/>',
   // efeitos
   deess: '<path d="M14 6a4 4 0 0 0-8 0c0 4 8 4 8 8a4 4 0 0 1-8 0"/><path d="M18 9l4 6M22 9l-4 6"/>',
   flanger: '<path d="M2 12c3-8 5 8 8 0s5 8 8 0 3-4 4-2"/><path d="M2 16c3-6 5 6 8 0s5 6 8 0" opacity=".5"/>',

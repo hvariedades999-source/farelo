@@ -818,7 +818,7 @@ async function library() {
         <div class="fg">
           <label class="sel"><input type="checkbox" ${selected.has(c.id) ? 'checked' : ''} aria-label="Selecionar ${esc(c.name)}"></label>
           <button class="open"><canvas class="th"></canvas><span class="tx"><span class="nm">${esc(c.name)}</span><small>${fmt(clipLen(c))}${n ? ` · ${n} efeito${n > 1 ? 's' : ''}` : ''}${c.edits?.loop ? ' · loop' : ''}${(c.tags || []).length ? ' · ' + c.tags.map(esc).join(', ') : ''}</small></span></button>
-          ${DESK ? `<span class="grip" title="Arraste para o Godot ou para uma pasta">${ic('select')}</span>` : ''}
+          ${DESK ? `<span class="grip" title="Arraste para o Godot ou para uma pasta">${ic('grip')}</span>` : ''}
           <button class="ibtn play" aria-label="Ouvir">${ic('play')}</button>
         </div>
       </li>`;
