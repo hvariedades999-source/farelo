@@ -45,7 +45,7 @@ function start() {
     if (!fp.startsWith(WEB)) return new Response('Proibido', { status: 403 });
     return net.fetch(pathToFileURL(fp).toString());
   });
-  const allowed = new Set(['media', 'display-capture', 'speaker-selection', 'clipboard-sanitized-write', 'fullscreen']);
+  const allowed = new Set(['media', 'display-capture', 'speaker-selection', 'clipboard-sanitized-write', 'fullscreen', 'midi', 'midiSysex']);
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(allowed.has(perm)));
   session.defaultSession.setPermissionCheckHandler((_wc, perm) => allowed.has(perm));
   // Som do computador: o Windows entrega o áudio de tudo o que está tocando (loopback)

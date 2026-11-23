@@ -40,8 +40,9 @@ const files = (dir, re) => { try { return fs.readdirSync(dir).filter((f) => !re 
   await step('é o programa de Windows', async () => {
     const isDesk = await win.evaluate(() => !!window.farelo && document.documentElement.classList.contains('desktop'));
     if (!isDesk) throw new Error('ponte do Windows ausente');
-    const n = await win.locator('.tabs button').count();
+    const n = await win.locator('.tabs [data-t]').count();
     if (n !== 4) throw new Error('esperava 4 abas, veio ' + n);
+    if (await win.locator('.areasw button').count() !== 2) throw new Error('sem a troca SFX / Música');
   });
   await step('gera e salva sons retrô', async () => {
     await win.click('.tabs [data-t=gen]');
@@ -130,6 +131,70 @@ const files = (dir, re) => { try { return fs.readdirSync(dir).filter((f) => !re 
     await win.click('#mp'); await sleep(1200);
     const t = await win.locator('#mInfo').innerText(); if (!/pico/.test(t)) throw new Error(t);
     await snap('mixagem');
+  });
+
+  // ---------- Estúdio de Música ----------
+  await step('música: área separada e modelo', async () => {
+    await win.keyboard.press('Backspace'); await sleep(400);
+    await win.click('.areasw [data-a=music]'); await sleep(500);
+    if (await win.locator('.tabs [data-t]').count() !== 1) throw new Error('área Música deveria ter só a aba Músicas');
+    await snap('musica-lista');
+    await win.click('.tpl[data-k=adventure]'); await win.waitForSelector('.st #aCv'); await sleep(800);
+    const n = await win.locator('.ah').count(); if (n < 4) throw new Error('faixas do modelo: ' + n);
+    await snap('musica-arranjo');
+  });
+  await step('música: toca e o relógio anda', async () => {
+    await win.click('#sPlay'); await sleep(1800);
+    const t = await win.locator('#sClock').innerText(); await win.click('.sttabs [data-t=mixer]'); await sleep(900); await snap('musica-mixer');
+    await win.keyboard.press(' '); await sleep(200);
+    if (/^1\.1 /.test(t)) throw new Error('relógio parado: ' + t);
+  });
+  await step('música: piano roll e teclado do PC', async () => {
+    await win.click('.sttabs [data-t=arr]'); await sleep(300);
+    const bb = await win.locator('#aCv').boundingBox();
+    await win.mouse.dblclick(bb.x + 140, bb.y + 30 + 30); await sleep(700);
+    if (!(await win.locator('#prG').count())) throw new Error('piano roll não abriu');
+    const before = await win.locator('#eInfo').innerText();
+    const g = await win.locator('#prG').boundingBox(), y = await win.locator('#pry').boundingBox();
+    await win.mouse.click(g.x + 20, y.y + 40); await sleep(300);
+    const after = await win.locator('#eInfo').innerText();
+    if (parseInt(after) !== parseInt(before) + 1) throw new Error(before + ' -> ' + after);
+    await win.keyboard.down('a'); await sleep(150); await win.keyboard.up('a');
+    await win.click('#ePlay'); await sleep(1000); await snap('musica-piano-roll'); await win.click('#ePlay');
+  });
+  await step('música: bateria por passos', async () => {
+    await win.click('.sttabs [data-t=arr]'); await sleep(300);
+    const n = await win.locator('.ah').count(), bb = await win.locator('#aCv').boundingBox();
+    await win.mouse.dblclick(bb.x + 600, bb.y + 30 + 64 * (n - 1) + 30); await sleep(700);
+    if (!(await win.locator('.stp').count())) throw new Error('sequenciador não abriu');
+    const on0 = await win.locator('.stp.on').count();
+    await win.click('.stp[data-pad="2"][data-s="6"]'); await sleep(200);
+    if (await win.locator('.stp.on').count() === on0) throw new Error('passo não ligou');
+    await snap('musica-bateria');
+  });
+  await step('música: assistente de acordes', async () => {
+    await win.click('.sttabs [data-t=arr]'); await sleep(300);
+    const n = await win.locator('.ah').count();
+    await win.click('#aAsst'); await sleep(400); await win.check('#asDr'); await win.click('#asGo'); await sleep(600);
+    if (await win.locator('.ah').count() <= n) throw new Error('nenhuma faixa criada');
+  });
+  await step('música: exporta em loop para o Godot', async () => {
+    await win.click('.sttabs [data-t=exp]'); await sleep(300);
+    await win.selectOption('#xF', 'wav'); await win.click('[data-x=godot]');
+    await win.waitForFunction(() => /Salvo|Erro/.test(document.querySelector('#xMsg').textContent), null, { timeout: 90000 });
+    const m = await win.locator('#xMsg').innerText(); if (/Erro/.test(m)) throw new Error(m);
+    const w = files(path.join(GODOT, 'music'), /\.wav$/); if (!w.length) throw new Error('nenhum wav em music/');
+    const buf = fs.readFileSync(path.join(GODOT, 'music', w[0]));
+    if (!buf.includes(Buffer.from('smpl'))) throw new Error('WAV sem marcação de loop');
+    await win.selectOption('#xF', 'ogg'); await win.click('[data-x=godot]');
+    await win.waitForFunction(() => !document.querySelector('[data-x=godot]').disabled && /Salvo|Erro/.test(document.querySelector('#xMsg').textContent), null, { timeout: 90000 });
+    if (!files(path.join(GODOT, 'music'), /\.ogg$/).length) throw new Error('nenhum ogg');
+    await snap('musica-exportar');
+  });
+  await step('música: salva no disco e volta', async () => {
+    await sleep(800);
+    if (!files(path.join(LIB, 'musicas'), /\.json$/).length) throw new Error('música não foi para Documentos/Farelo/musicas');
+    await win.click('#sBack'); await sleep(400); await win.click('.areasw [data-a=sfx]'); await sleep(400);
   });
   await step('configurações e atalhos', async () => {
     await win.keyboard.press('F1'); await sleep(300); await win.click('#setBtn'); await sleep(600); await snap('configuracoes'); await win.keyboard.press('Escape');

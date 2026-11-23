@@ -98,6 +98,10 @@ const P = {
   echo: '<path d="M4 6v12M9 8v8M13.5 10v4M17.5 11v2M21 11.5v1"/>',
   reverb: '<path d="M3 21V9l9-6 9 6v12"/><path d="M8 15c2-2 6-2 8 0M10 18c1-1 3-1 4 0"/>',
   chorus: '<path d="M2 10c2-3 4-3 6 0s4 3 6 0 4-3 6 0"/><path d="M2 15c2-3 4-3 6 0s4 3 6 0 4-3 6 0" opacity=".55"/>',
+  tostart: '<path d="M6 5v14"/><path d="M19 5l-10 7 10 7z" fill="currentColor" stroke="none"/>',
+  metro: '<path d="M9 3h6l4 18H5z"/><path d="M12 15l5-9"/><path d="M7 15h10"/>',
+  note: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  wave: '<path d="M2 12h2l2-6 3 12 3-16 3 18 3-12 2 4h2"/>',
   tremolo: '<path d="M2 12c1.5-7 3-7 4.5 0s3 7 4.5 0 3-7 4.5 0 3 7 4.5 0"/>',
 };
 export function ic(name, cls = '') {

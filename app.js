@@ -3,6 +3,7 @@ import { ic } from './icons.js';
 import * as G from './sfxr.js';
 import * as P from './procgen.js';
 import * as DR from './drive.js';
+import { initStudio } from './studio.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -38,8 +39,8 @@ document.addEventListener('click', (e) => { if (settings.vib && e.target.closest
 let dbp;
 function db() {
   return dbp || (dbp = new Promise((res, rej) => {
-    const r = indexedDB.open('sfx-studio', 1);
-    r.onupgradeneeded = () => ['clips', 'presets', 'mixes'].forEach((s) => r.result.createObjectStore(s, { keyPath: 'id' }));
+    const r = indexedDB.open('sfx-studio', 2);
+    r.onupgradeneeded = () => ['clips', 'presets', 'mixes', 'songs'].forEach((s) => { if (!r.result.objectStoreNames.contains(s)) r.result.createObjectStore(s, { keyPath: 'id' }); });
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
   }));
@@ -123,7 +124,7 @@ function playPos() {
 }
 
 // ---------- desenho ----------
-const col = () => C || (C = Object.fromEntries(['--wave', '--wave-dim', '--handle', '--fg', '--muted', '--accent', '--c3', '--c4', '--rec', '--bg', '--line', '--sel'].map((v) => [v.slice(2), getComputedStyle(document.documentElement).getPropertyValue(v).trim()])));
+const col = () => C || (C = Object.fromEntries(['--wave', '--wave-dim', '--handle', '--fg', '--muted', '--accent', '--c3', '--c4', '--rec', '--bg', '--line', '--sel', '--panel', '--panel2'].map((v) => [v.slice(2), getComputedStyle(document.documentElement).getPropertyValue(v).trim()])));
 
 const peakCache = new WeakMap();
 function peaks(buf, v0, v1, w, ch = 0) {
@@ -341,8 +342,8 @@ function sheet(title, body, { onClose, icon } = {}) {
 // ---------- efeitos: cartões, seletor e gaveta ----------
 const GROUPS = [['Limpeza', ['denoise', 'gate', 'deess']], ['Volume e dinâmica', ['gain', 'comp', 'limiter']], ['Timbre', ['eq', 'lowpass', 'highpass', 'bandpass']], ['Voz, tom e tempo', ['formant', 'autotune', 'pitch', 'speed', 'tape']], ['Distorção e robô', ['dist', 'crush', 'robot', 'vocoder', 'radio']], ['Espaço', ['room', 'reverb', 'echo', 'pingpong']], ['Modulação', ['chorus', 'flanger', 'phaser', 'wah', 'tremolo']]];
 const SHORT = { denoise: 'Remove chiado constante', gate: 'Silencia os vazios', gain: 'Mais alto ou mais baixo', comp: 'Som mais encorpado', limiter: 'Segura os picos', eq: 'Graves, médios e agudos', lowpass: 'Abafa o som', highpass: 'Tira o grave', bandpass: 'Isola uma faixa', pitch: 'Mais grave ou agudo', speed: 'Mais rápido ou lento', tape: 'Tom e velocidade juntos', dist: 'Som rasgado', crush: 'Som de videogame antigo', robot: 'Voz metálica', radio: 'Rádio ou telefone', echo: 'Repetições', reverb: 'Sala, salão, caverna', chorus: 'Várias vozes juntas', tremolo: 'Volume pulsante', deess: 'Suaviza o chiado do S', flanger: 'Varrido de jato', phaser: 'Varrido rodopiante', wah: 'Filtro que fala', room: 'Quarto, caverna, metal…', pingpong: 'Eco de um lado ao outro', vocoder: 'Voz de robô clássica', autotune: 'Afina a voz', formant: 'Tom sem perder o timbre' };
-function pickEffect(onPick) {
-  const s = sheet('Adicionar efeito', GROUPS.map(([g, ks]) => `<h3 class="gh">${g}</h3><div class="fxgrid">${ks.map((k) => `<button class="fxtile" data-t="${k}">${ic(k)}<b>${D.FX[k].label.replace(/ \(.*\)/, '')}</b><small>${SHORT[k]}</small></button>`).join('')}</div>`).join(''), { icon: 'plus' });
+function pickEffect(onPick, allow = null) {
+  const s = sheet('Adicionar efeito', GROUPS.map(([g, ks]) => [g, allow ? ks.filter((k) => allow.includes(k)) : ks]).filter(([, ks]) => ks.length).map(([g, ks]) => `<h3 class="gh">${g}</h3><div class="fxgrid">${ks.map((k) => `<button class="fxtile" data-t="${k}">${ic(k)}<b>${D.FX[k].label.replace(/ \(.*\)/, '')}</b><small>${SHORT[k]}</small></button>`).join('')}</div>`).join(''), { icon: 'plus' });
   $$('.fxtile', s.body).forEach((b) => b.onclick = () => { s.close(); onPick(b.dataset.t); });
 }
 const fxSummary = (fx) => { const def = D.FX[fx.type]; return Object.entries(def.params).slice(0, 2).map(([k, p]) => show(p, fx.params[k])).join(' · '); };
@@ -374,7 +375,7 @@ function fxSheet(fx, { onChange, onAB, onMove, onRemove, first, last, extra = ''
   return s;
 }
 // Lista de efeitos em cartões; tocar abre a gaveta de ajustes.
-function chainUI(el, chain, onChange, { onAB } = {}) {
+function chainUI(el, chain, onChange, { onAB, allow } = {}) {
   const draw = () => {
     el.innerHTML = `${chain.length ? '' : '<div class="empty sm"><b>Nenhum efeito</b><p>Toque em Adicionar efeito. Eles são aplicados de cima para baixo.</p></div>'}
       <div class="fxlist">${chain.map((fx, i) => (D.FX[fx.type] ? `<div class="fxcard ${fx.on ? '' : 'off'}" data-i="${i}">
@@ -387,7 +388,7 @@ function chainUI(el, chain, onChange, { onAB } = {}) {
       $('input', card).onchange = (e) => { fx.on = e.target.checked; card.classList.toggle('off', !fx.on); onChange(); };
       $('.fxopen', card).onclick = () => open(i);
     });
-    $('.addfx', el).onclick = () => pickEffect((type) => { chain.push({ type, on: true, params: D.defaultParams(type) }); draw(); onChange(); open(chain.length - 1); });
+    $('.addfx', el).onclick = () => pickEffect((type) => { chain.push({ type, on: true, params: D.defaultParams(type) }); draw(); onChange(); open(chain.length - 1); }, allow);
   };
   const open = (i) => {
     const fx = chain[i];
@@ -537,9 +538,9 @@ async function share(files, msg, okText) {
 
 // ---------- backup ----------
 async function makeBackup() {
-  const [clips, presets, mixes] = await Promise.all([all('clips'), all('presets'), all('mixes')]);
+  const [clips, presets, mixes, songs] = await Promise.all([all('clips'), all('presets'), all('mixes'), all('songs')]);
   const toUrl = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
-  const out = { app: 'farelo', version: 3, date: new Date().toISOString(), presets, mixes, clips: [] };
+  const out = { app: 'farelo', version: 4, date: new Date().toISOString(), presets, mixes, songs, clips: [] };
   for (const c of clips) out.clips.push({ ...c, blob: await toUrl(c.blob) });
   return new File([JSON.stringify(out)], `farelo-backup-${new Date().toISOString().slice(0, 10)}.txt`, { type: 'text/plain' });
 }
@@ -550,7 +551,8 @@ async function restoreBackup(file) {
   for (const c of j.clips || []) { c.blob = await (await fetch(c.blob)).blob(); await put('clips', c); pcache.delete(c.id); }
   for (const p of j.presets || []) await put('presets', p);
   for (const m of j.mixes || []) await put('mixes', m);
-  return { clips: (j.clips || []).length, presets: (j.presets || []).length, mixes: (j.mixes || []).length };
+  for (const m of j.songs || []) await put('songs', m);
+  return { clips: (j.clips || []).length, presets: (j.presets || []).length, mixes: (j.mixes || []).length, songs: (j.songs || []).length };
 }
 
 // ---------- programa de Windows: biblioteca no disco, Godot, arquivos ----------
@@ -572,12 +574,14 @@ async function mirror(s, o) {
     const { blob, ...meta } = o;
     await DESK.writeFile(libPath('sons', `${o.id}.json`), JSON.stringify({ ...meta, audioFile: audio, mime: blob?.type || '' }, null, 1));
   } else if (s === 'mixes') await DESK.writeFile(libPath('mixagens', `${o.id}.json`), JSON.stringify(o, null, 1));
+  else if (s === 'songs') await DESK.writeFile(libPath('musicas', `${o.id}.json`), JSON.stringify(o, null, 1));
   else if (s === 'presets') await DESK.writeFile(libPath('presets.json'), JSON.stringify(await all('presets'), null, 1));
 }
 async function unmirror(s, id) {
   if (!deskCfg.lib) return;
   if (s === 'clips') { const ls = await DESK.listDir(libPath('sons')).catch(() => []); for (const f of ls) if (f.name.startsWith(id + '.')) await DESK.remove(libPath('sons', f.name)); }
   else if (s === 'mixes') await DESK.remove(libPath('mixagens', `${id}.json`));
+  else if (s === 'songs') await DESK.remove(libPath('musicas', `${id}.json`));
   else if (s === 'presets') await DESK.writeFile(libPath('presets.json'), JSON.stringify(await all('presets'), null, 1));
 }
 // Lê a pasta da biblioteca e traz para o app o que estiver mais novo no disco
@@ -602,12 +606,17 @@ async function syncFromDisk() {
   for (const f of await DESK.listDir(libPath('mixagens')).catch(() => [])) {
     try { const m = JSON.parse(await DESK.readFile(libPath('mixagens', f.name), true)); if (!mixes[m.id] || (mixes[m.id].updated || 0) < (m.updated || 0)) await putRaw('mixes', m); } catch {}
   }
+  const songs = Object.fromEntries((await all('songs')).map((m) => [m.id, m]));
+  for (const f of await DESK.listDir(libPath('musicas')).catch(() => [])) {
+    try { const m = JSON.parse(await DESK.readFile(libPath('musicas', f.name), true)); if (!songs[m.id] || (songs[m.id].updated || 0) < (m.updated || 0)) await putRaw('songs', m); } catch {}
+  }
   return n;
 }
 // Copia para o disco tudo o que já existe no app (primeira vez ou ao trocar de pasta)
 async function pushAllToDisk() {
   for (const c of await all('clips')) await mirror('clips', c);
   for (const m of await all('mixes')) await mirror('mixes', m);
+  for (const m of await all('songs')) await mirror('songs', m);
   await mirror('presets');
 }
 async function importFiles(files, open = false) {
@@ -745,13 +754,17 @@ document.addEventListener('keydown', (e) => {
   if (e.key === '?' || (e.key === '/' && e.shiftKey)) { e.preventDefault(); shortcutsSheet(); return; }
   if (!e.ctrlKey && !e.metaKey && !e.altKey && document.body.classList.contains('ed-mode') === false) {
     const map = { F1: 'lib', F2: 'gen', F3: 'mix', F4: 'files' };
-    if (map[e.key] && (map[e.key] !== 'files' || DESK)) { e.preventDefault(); nav(map[e.key]); return; }
+    if (map[e.key] && (map[e.key] !== 'files' || DESK)) { e.preventDefault(); setArea('sfx'); nav(map[e.key]); return; }
+    if (e.key === 'F9') { e.preventDefault(); setArea(area === 'music' ? 'sfx' : 'music'); render(); return; }
   }
   keyHandler && keyHandler(e);
 });
+let keyUpHandler = null;
+document.addEventListener('keyup', (e) => { if (e.target.closest && e.target.closest('input:not([type=range]):not([type=checkbox]), textarea, select')) return; keyUpHandler && keyUpHandler(e); });
 const SHORTCUTS = [
-  ['Geral', [['?', 'Mostrar esta lista'], ['Esc', 'Fechar janela ou gaveta'], ['F1 / F2 / F3 / F4', 'Biblioteca, Gerador, Mixagens, Arquivos'], ['R', 'Gravar (na Biblioteca)'], ['Shift + R', 'Gravar o som do computador'], ['Espaço', 'Tocar / parar']]],
+  ['Geral', [['?', 'Mostrar esta lista'], ['Esc', 'Fechar janela ou gaveta'], ['F1 / F2 / F3 / F4', 'Biblioteca, Gerador, Mixagens, Arquivos'], ['F9', 'Alternar entre SFX e Música'], ['R', 'Gravar (na Biblioteca)'], ['Shift + R', 'Gravar o som do computador'], ['Espaço', 'Tocar / parar']]],
   ['Editor', [['Espaço', 'Tocar com efeitos / parar'], ['Shift + Espaço', 'Tocar o original'], ['L', 'Liga/desliga o loop'], ['1 2 3 4', 'Cortar, Trecho, Volume, Reparar'], ['Ctrl + Z / Ctrl + Y', 'Desfazer / refazer'], ['Ctrl + A', 'Selecionar tudo (modo Trecho)'], ['Ctrl + C / X / V', 'Copiar, recortar, colar trecho'], ['Delete', 'Apagar trecho selecionado'], ['M', 'Adicionar marcador'], ['+ / - / 0', 'Aproximar, afastar, ver tudo'], ['Roda do mouse', 'Zoom; com Shift, rolar para os lados'], ['E', 'Abrir a aba Exportar'], ['Ctrl + S', 'Salvar no projeto Godot (programa de Windows)'], ['Backspace', 'Voltar para a Biblioteca']]],
+  ['Estúdio de Música', [['Espaço', 'Tocar / parar (no Editor, toca só o padrão)'], ['F5 / F6 / F7 / F8', 'Arranjo, Editor, Mixer, Exportar'], ['A W S E D F T G Y H U J K', 'Tocar notas como um piano (no Editor)'], ['Z / X', 'Oitava abaixo / acima'], ['Delete', 'Apagar bloco ou notas selecionadas'], ['Ctrl + D', 'Duplicar bloco ou notas'], ['Ctrl + C / V', 'Copiar / colar notas'], ['↑ / ↓', 'Transpor notas (Shift: uma oitava)'], ['Ctrl + roda do mouse', 'Zoom'], ['Home', 'Voltar ao início']]],
   ['Biblioteca e Arquivos', [['↑ / ↓', 'Escolher som'], ['Espaço', 'Ouvir'], ['Enter', 'Abrir no editor / importar'], ['Ctrl + A', 'Marcar todos']]],
 ];
 function shortcutsSheet() {
@@ -773,15 +786,26 @@ window.addEventListener('drop', (e) => {
 });
 
 // ---------- navegação ----------
-let tab = 'lib';
+// Duas áreas separadas: SFX (biblioteca, gerador, mixagens, arquivos) e Música (estúdio de BGM)
+let tab = 'lib', area = store.get('area', 'sfx');
 const tabsEl = $('.tabs');
-tabsEl.classList.toggle('four', !!DESK);
-tabsEl.innerHTML = [['lib', 'library', 'Biblioteca'], ['gen', 'gen', 'Gerador'], ['mix', 'mix', 'Mixagens'], ...(DESK ? [['files', 'search', 'Arquivos']] : [])].map(([t, i, l]) => `<button data-t="${t}" aria-current="${t === tab}">${ic(i)}<span>${l}</span></button>`).join('');
-function setTab(t) { tab = t; $$('.tabs button').forEach((b) => b.setAttribute('aria-current', b.dataset.t === t)); }
-function nav(t) { stop(); setTab(t); render(); }
-$$('.tabs button').forEach((b) => b.onclick = () => nav(b.dataset.t));
+const AREA_TABS = { sfx: [['lib', 'library', 'Biblioteca'], ['gen', 'gen', 'Gerador'], ['mix', 'mix', 'Mixagens'], ...(DESK ? [['files', 'search', 'Arquivos']] : [])], music: [['songs', 'note', 'Músicas']] };
+function drawTabs() {
+  const ts = AREA_TABS[area];
+  if (area === 'music') tab = 'songs'; else if (tab === 'songs') tab = 'lib';
+  tabsEl.className = `tabs n${ts.length + 1} area-${area}`;
+  tabsEl.innerHTML = `<div class="areasw" role="group" aria-label="Área"><button data-a="sfx" aria-pressed="${area === 'sfx'}">${ic('wave')}<span>SFX</span></button><button data-a="music" aria-pressed="${area === 'music'}">${ic('note')}<span>Música</span></button></div>`
+    + ts.map(([t, i, l]) => `<button data-t="${t}" aria-current="${t === tab}">${ic(i)}<span>${l}</span></button>`).join('');
+  $$('.tabs [data-t]').forEach((b) => b.onclick = () => nav(b.dataset.t));
+  $$('.areasw button').forEach((b) => b.onclick = () => { if (b.dataset.a === area && !document.body.classList.contains('ed-mode')) return; setArea(b.dataset.a); render(); });
+}
+function setArea(a) { if (a === area) return; area = a; store.set('area', a); stop(); stopAll(); drawTabs(); }
+function setTab(t) { tab = t; $$('.tabs [data-t]').forEach((b) => b.setAttribute('aria-current', b.dataset.t === t)); }
+function nav(t) { stopAll(); setTab(t); render(); }
 function screen(mode) { document.body.classList.toggle('ed-mode', mode === 'ed'); }
-function render() { screen('main'); keyHandler = null; document.title = 'Farelo'; window.scrollTo(0, 0); ({ mix: mixList, gen: generator, files: DESK ? browser : null }[tab] || library)(); }
+function render() { stopStudio(); screen('main'); keyHandler = null; keyUpHandler = null; document.title = 'Farelo'; window.scrollTo(0, 0); document.body.classList.toggle('music', area === 'music'); (area === 'music' ? studio.musicList : { mix: mixList, gen: generator, files: DESK ? browser : null }[tab] || library)(); }
+function stopAll() { stop(); stopStudio(); }
+function stopStudio() { try { studio && studio.stop && studio.stop(); } catch {} }
 
 // ---------- biblioteca ----------
 let selected = new Set(), query = '', tagFilter = '';
@@ -837,7 +861,7 @@ async function library() {
       <button class="ghost" id="clearSel">Limpar seleção</button>
     </section>
     <details class="card" id="bkBox"><summary>Backup e restauração</summary>
-      <p class="hint">O backup junta todos os sons, presets e mixagens num arquivo só. Guarde no Drive: se você limpar os dados do navegador ou trocar de celular, é só restaurar.${lastBk ? ` Último backup: ${new Date(lastBk).toLocaleDateString('pt-BR')}.` : ''}</p>
+      <p class="hint">O backup junta todos os sons, presets, mixagens e músicas num arquivo só. Guarde no Drive: se você limpar os dados do navegador ou trocar de celular, é só restaurar.${lastBk ? ` Último backup: ${new Date(lastBk).toLocaleDateString('pt-BR')}.` : ''}</p>
       <div class="btns">
         <button class="primary" id="bkShare">${ic('share')}Enviar backup <small>Drive</small></button>
         ${settings.drive.clientId ? `<button id="bkDrive">${ic('drive')}Backup direto no Drive <small>${esc(settings.drive.folder)}</small></button>` : ''}
@@ -956,7 +980,7 @@ async function library() {
   };
   $('#bkIn').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    try { bkMsg.textContent = 'Restaurando…'; const r = await restoreBackup(f); await library(); $('#bkBox').open = true; $('#bkMsg').textContent = `Restaurado: ${r.clips} sons, ${r.presets} presets e ${r.mixes} mixagens.`; }
+    try { bkMsg.textContent = 'Restaurando…'; const r = await restoreBackup(f); await library(); $('#bkBox').open = true; $('#bkMsg').textContent = `Restaurado: ${r.clips} sons, ${r.presets} presets, ${r.mixes} mixagens e ${r.songs} músicas.`; }
     catch (err) { bkMsg.textContent = err.message; }
   };
 }
@@ -981,7 +1005,7 @@ async function openSettings() {
     </details>
     ${DESK ? `<details class="card" open><summary>${ic('library')}Programa de Windows</summary>
       <div class="kv"><span>Pasta da biblioteca</span><b id="stLib">${esc(deskCfg.lib)}</b></div>
-      <p class="hint">Todos os sons, presets e mixagens ficam salvos aqui como arquivos. Coloque essa pasta dentro do Google Drive para PC ou do OneDrive para ter backup automático.</p>
+      <p class="hint">Todos os sons, presets, mixagens e músicas ficam salvos aqui como arquivos. Coloque essa pasta dentro do Google Drive para PC ou do OneDrive para ter backup automático.</p>
       <div class="row"><button id="stLibCh">Trocar pasta</button><button id="stLibOpen">Abrir</button></div>
       <div class="kv"><span>Projeto Godot</span><b id="stGd">${deskCfg.godot ? esc(deskCfg.godot) : 'nenhum'}</b></div>
       <div class="row"><button id="stGdCh" class="primary">${deskCfg.godot ? 'Trocar projeto' : 'Escolher projeto'}</button>${deskCfg.godot ? '<button id="stGdOpen">Abrir</button>' : ''}</div>
@@ -1054,6 +1078,7 @@ const TOUR = [
   ['edit', 'Edite sem medo', 'Corte as pontas, selecione um trecho para apagar, copiar ou aplicar efeito, e desenhe a curva de volume. O original nunca é perdido, e o botão de desfazer volta qualquer passo.'],
   ['fx', 'Efeitos com A/B', 'Na aba Efeitos, toque num cartão para ajustar. O botão A/B compara com e sem o efeito. Toque duas vezes num controle para voltar ao padrão.'],
   ['export', 'Exporte para o Godot', 'Exporte WAV ou OGG, em lote, com volume padronizado e até um pacote .tres pronto. Faça backup na Biblioteca de vez em quando.'],
+  ['note', 'Faça as músicas do jogo', 'Toque em Música, no canto da barra, para abrir o estúdio: faixas de instrumentos, bateria por passos, piano roll, mixer e exportação em loop perfeito.'],
 ];
 function tour() {
   if ($('.tour')) return;
@@ -2235,6 +2260,18 @@ async function mixEditor(mix) {
     stop(); await del('mixes', mix.id); render();
   };
 }
+
+// ---------- Estúdio de Música ----------
+let studio = null;
+studio = initStudio({
+  $, $$, esc, uid, fmt, store, ic, D, DESK, LUFS,
+  get app() { return app; }, get deskCfg() { return deskCfg; },
+  all, put, del, toast, sheet, sliderRow, bindSliders, chainUI, setupCanvas, peaks, col: () => col(),
+  processed, thumbOf, newClip, safe, share, download, godotWrite, linkGodot, saveDesk, openSettings,
+  screen, render: () => render(), stopAll: () => stop(),
+  setKeys: (f) => { keyHandler = f; }, setKeyUp: (f) => { keyUpHandler = f; },
+});
+drawTabs();
 
 applyTheme();
 (async () => {

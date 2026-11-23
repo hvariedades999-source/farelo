@@ -1242,3 +1242,5 @@ Object.assign(PROC, {
     return mapCh(b, (x) => { const sh = Math.abs(p.semi) < 0.01 ? x : resample(stretch(x, r), r); const y = new Float32Array(x.length); y.set(sh.subarray(0, x.length)); return formantFix(x, y, fr); });
   },
 });
+
+export { roomIR, ROOMS, curve as distCurve };
