@@ -2,7 +2,7 @@
 import * as M from './music.js';
 
 let X; // funções compartilhadas do app
-export function initStudio(ctx) { X = ctx; return { musicList, openSong, stop: () => player && player.playing && player.stop() }; }
+export function initStudio(ctx) { X = ctx; return { musicList, openSong, stop: () => { if (player && player.playing) player.stop(); if (X.midi) for (const i of X.midi.inputs.values()) i.onmidimessage = null; } }; }
 
 const COLORS = ['#f2a33a', '#5fc4d9', '#b48cf2', '#7fd17a', '#f27aa8', '#f2d43a', '#7aa2f2', '#f27a5f', '#4fd1c5', '#c7a0ff'];
 const WAVE_IDX = { sine: 0, triangle: 1, square: 2, sawtooth: 3 };
@@ -220,7 +220,7 @@ async function openSong(song, opt = {}) {
   X.$('#sScale').onchange = (e) => { song.scale = e.target.value; touch(); redrawView(); };
 
   // ----- transporte -----
-  const loopRange = () => (S.patOnly ? null : song.loop.on ? { a: song.loop.a, b: song.loop.b } : null);
+  const loopRange = () => (S.patOnly ? { a: 0, b: S.patOnly.pat.len } : song.loop.on ? { a: song.loop.a, b: song.loop.b } : null);
   const setPlayIcon = () => { X.$('#sPlay').innerHTML = X.ic(pl.playing ? 'stop' : 'play'); X.$('#sPlay').setAttribute('aria-label', pl.playing ? 'Parar' : 'Tocar'); };
   const playSong = (from = S.cursor) => {
     if (S.patOnly) stopPattern();
@@ -284,15 +284,16 @@ async function openSong(song, opt = {}) {
     if (h.start != null) { const p = pl.pos(); if (p != null) recordNote(h.drumPad ?? m, h.start, p < h.start ? p + (S.patOnly?.pat.len || 0) : p, h.vel); }
   };
   let midiIn = [];
-  if (navigator.requestMIDIAccess && !X.midiAsked) {
-    X.midiAsked = true;
-    navigator.requestMIDIAccess().then((acc) => { X.midi = acc; }).catch(() => {});
-  }
   const hookMidi = () => {
-    if (!X.midi) return;
+    if (!X.midi || !X.$('.st')) return;
+    X.midi.onstatechange = hookMidi;
     midiIn = [...X.midi.inputs.values()];
     midiIn.forEach((inp) => { inp.onmidimessage = (ev) => { const [st, a, b] = ev.data; const cmd = st & 0xf0; if (cmd === 0x90 && b > 0) noteDown(a, b / 127); else if (cmd === 0x80 || (cmd === 0x90 && b === 0)) noteUp(a); }; });
   };
+  if (navigator.requestMIDIAccess && !X.midiAsked) {
+    X.midiAsked = true;
+    navigator.requestMIDIAccess().then((acc) => { X.midi = acc; hookMidi(); }).catch(() => {});
+  }
   hookMidi();
 
   // ----- abas -----
@@ -545,7 +546,7 @@ async function openSong(song, opt = {}) {
     X.$$('.insts .fxtile', b).forEach((tile) => tile.onclick = () => {
       t.inst = tile.dataset.k; t.params = normParams(M.instParams(t.inst));
       if (Object.values(M.INSTRUMENTS).some(([n]) => n === t.name) || /^Instrumento/.test(t.name)) t.name = M.INSTRUMENTS[t.inst][0];
-      X.$$('.insts .fxtile', b).forEach((z) => z.classList.toggle('is', z === tile)); sliders(); touch(); pl.noteOn(t, 60)?.call && setTimeout(() => {}, 0);
+      X.$$('.insts .fxtile', b).forEach((z) => z.classList.toggle('is', z === tile)); sliders(); touch();
       const off = pl.noteOn(t, 60); setTimeout(() => off && off(), 350);
     });
     X.$$('.minikeys button', b).forEach((k) => { let off; k.onpointerdown = () => { off = pl.noteOn(t, +k.dataset.m); }; k.onpointerup = k.onpointerleave = () => { off && off(); off = null; }; });
