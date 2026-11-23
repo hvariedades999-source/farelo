@@ -17,11 +17,13 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+const DESK = window.farelo || null;
+if (DESK) document.documentElement.classList.add('desktop');
+else if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // ---------- preferências: tema e vibração ----------
 const settings = { theme: 'dark', vib: true, ...store.get('settings', {}) };
-settings.drive = { clientId: '', folder: 'SFX Studio', ...(settings.drive || {}) };
+settings.drive = { clientId: '', folder: 'Farelo', ...(settings.drive || {}) };
 let C;
 function applyTheme() {
   document.documentElement.dataset.theme = settings.theme;
@@ -51,8 +53,15 @@ async function tx(st, mode, fn) {
   });
 }
 const all = (s) => tx(s, 'readonly', (st) => st.getAll());
-const put = (s, o) => tx(s, 'readwrite', (st) => st.put(o));
-const del = (s, id) => tx(s, 'readwrite', (st) => st.delete(id));
+const putRaw = (s, o) => tx(s, 'readwrite', (st) => st.put(o));
+const delRaw = (s, id) => tx(s, 'readwrite', (st) => st.delete(id));
+const put = async (s, o) => {
+  if (s !== 'presets') o.updated = Date.now();
+  const r = await putRaw(s, o);
+  if (DESK) mirror(s, o).catch((e) => console.warn('disco', e));
+  return r;
+};
+const del = async (s, id) => { const r = await delRaw(s, id); if (DESK) unmirror(s, id).catch(() => {}); return r; };
 navigator.storage?.persist?.();
 
 // ---------- áudio ----------
@@ -86,8 +95,14 @@ function thumbOf(buf, a = 0, z = buf.duration, n = 48) {
 }
 
 let playing = null;
+let sinkSet = '';
+function applySink() {
+  const c = D.ctx(), id = settings.outDev || '';
+  if (c.setSinkId && sinkSet !== id) { sinkSet = id; c.setSinkId(id).catch(() => {}); }
+}
 function play(buf, { from = 0, to = null, loop = false, loopStart = 0, loopEnd = null, tag = '', onEnd } = {}) {
   stop();
+  applySink();
   const c = D.ctx(), s = c.createBufferSource();
   s.buffer = buf;
   s.connect(c.destination);
@@ -402,13 +417,17 @@ function exportPanel(id, { godot = false } = {}) {
       <label class="check"><input type="checkbox" class="mono" ${expOpts.mono ? 'checked' : ''}> Mono</label>
     </div>
     ${godot ? `<label class="check"><input type="checkbox" class="gd" ${expOpts.godot ? 'checked' : ''}> Pacote Godot (AudioStreamRandomizer)</label>
-      <div class="gdbox" ${expOpts.godot ? '' : 'hidden'}><label class="field">Pasta no projeto Godot<input class="gdir" value="${esc(expOpts.gdir)}" autocomplete="off"></label>
+      <div class="gdbox" ${expOpts.godot ? '' : 'hidden'}>${DESK ? '' : `<label class="field">Pasta no projeto Godot<input class="gdir" value="${esc(expOpts.gdir)}" autocomplete="off"></label>`}
       <p class="hint">Junto com os sons vai um arquivo .tres que sorteia um deles a cada vez. Coloque todos os arquivos nessa pasta do projeto e use o .tres num AudioStreamPlayer.</p></div>` : ''}
+    ${DESK ? `<div class="gdrow"><label class="field">Subpasta no projeto Godot<input class="gsub" value="${esc(deskCfg.gsub)}" placeholder="ex.: sfx/passos" autocomplete="off"></label></div>
+      <p class="hint gdinfo">${deskCfg.godot ? `Projeto: ${esc(deskCfg.godot)}` : 'Nenhum projeto Godot vinculado. Toque em "Salvar no projeto Godot" para escolher a pasta.'}</p>` : ''}
     <div class="btns">
-      <button class="primary" data-act="share">${ic('share')}<span class="lbl">Enviar ${expOpts.fmt.toUpperCase()}</span><small>Drive e outros</small></button>
-      <button class="wa" data-act="wa">${ic('share')}Enviar no WhatsApp <small>MP3</small></button>
+      ${DESK ? `<button class="primary" data-act="godot">${ic('export')}Salvar no projeto Godot <small>Ctrl+S</small></button>
+      <button data-act="folder">${ic('library')}Salvar em uma pasta…</button>
+      <button class="wa" data-act="wafile">${ic('share')}MP3 para WhatsApp <small>abre a pasta</small></button>` : `<button class="primary" data-act="share">${ic('share')}<span class="lbl">Enviar ${expOpts.fmt.toUpperCase()}</span><small>Drive e outros</small></button>
+      <button class="wa" data-act="wa">${ic('share')}Enviar no WhatsApp <small>MP3</small></button>`}
       ${settings.drive.clientId ? `<button data-act="drive">${ic('drive')}Enviar para o Drive <small>${esc(settings.drive.folder)}</small></button>` : ''}
-      <button data-act="save">${ic('download')}Salvar no celular</button>
+      ${DESK ? '' : `<button data-act="save">${ic('download')}Salvar no celular</button>`}
     </div>
     <p class="msg" role="status"></p>
   </div>`;
@@ -430,10 +449,11 @@ function bindExport(el, getItems, { packName } = {}) {
   $('.rate', el).onchange = (e) => { expOpts.rate = +e.target.value; saveExp(); };
   $('.mono', el).onchange = (e) => { expOpts.mono = e.target.checked; saveExp(); };
   $('.lufs', el).onchange = (e) => { expOpts.lufs = +e.target.value; saveExp(); };
-  $('.fmt', el).onchange = (e) => { expOpts.fmt = e.target.value; saveExp(); $('[data-act=share] .lbl', el).textContent = `Enviar ${expOpts.fmt.toUpperCase()}`; };
+  $('.fmt', el).onchange = (e) => { expOpts.fmt = e.target.value; saveExp(); const l = $('[data-act=share] .lbl', el); if (l) l.textContent = `Enviar ${expOpts.fmt.toUpperCase()}`; };
+  if ($('.gsub', el)) $('.gsub', el).onchange = (e) => { deskCfg.gsub = e.target.value.trim().replace(/^res:\/\//, '').replace(/^\/+|\/+$/g, ''); e.target.value = deskCfg.gsub; saveDesk(); };
   if ($('.gd', el)) {
     $('.gd', el).onchange = (e) => { expOpts.godot = e.target.checked; $('.gdbox', el).hidden = !expOpts.godot; saveExp(); };
-    $('.gdir', el).onchange = (e) => { expOpts.gdir = e.target.value.trim() || 'res://sfx/'; saveExp(); };
+    if ($('.gdir', el)) $('.gdir', el).onchange = (e) => { expOpts.gdir = e.target.value.trim() || 'res://sfx/'; saveExp(); };
   }
   $$('[data-act]', el).forEach((btn) => btn.onclick = async () => {
     const act = btn.dataset.act;
@@ -446,14 +466,34 @@ function bindExport(el, getItems, { packName } = {}) {
       for (const [i, it] of items.entries()) {
         if (items.length > 1) msg.textContent = `Preparando ${i + 1} de ${items.length}…`;
         const b = await D.prepare(it.buf, expOpts);
-        const kind = act === 'wa' ? 'mp3' : expOpts.fmt;
+        const kind = act === 'wa' || act === 'wafile' ? 'mp3' : expOpts.fmt;
         const blob = kind === 'mp3' ? await D.encodeMp3(b) : kind === 'ogg' ? await D.encodeOgg(b) : D.encodeWav(b, { loop: !!it.loop });
         let name = `${safe(it.name)}.${kind}`, n = 2;
         while (files.some((f) => f.name === name)) name = `${safe(it.name)}_${n++}.${kind}`;
         files.push(new File([blob], name, { type: blob.type }));
       }
       let tres = null;
-      if (act !== 'wa' && $('.gd', el)?.checked) tres = new File([godotTres(files.map((f) => f.name), expOpts.gdir)], `${safe(packName ? packName() : items[0].name)}.tres`, { type: 'text/plain' });
+      const gdirNow = DESK ? `res://${deskCfg.gsub ? deskCfg.gsub + '/' : ''}` : expOpts.gdir;
+      if (act !== 'wa' && act !== 'wafile' && $('.gd', el)?.checked) tres = new File([godotTres(files.map((f) => f.name), gdirNow)], `${safe(packName ? packName() : items[0].name)}.tres`, { type: 'text/plain' });
+      const allF = [...files, ...(tres ? [tres] : [])];
+      if (act === 'godot') {
+        if (!deskCfg.godot && !(await linkGodot($('.gdinfo', el)))) { msg.textContent = 'Nenhum projeto escolhido.'; return; }
+        const r = await godotWrite(allF, deskCfg.gsub);
+        for (const [i, it] of items.entries()) if (it.clip) { it.clip.godot = { sub: deskCfg.gsub, file: files[i].name, key: clipKey(it.clip), at: Date.now() }; await put('clips', it.clip); }
+        if ($('.gdinfo', el)) $('.gdinfo', el).textContent = `Projeto: ${deskCfg.godot}`;
+        msg.innerHTML = `${allF.length > 1 ? allF.length + ' arquivos salvos' : 'Salvo'} em <b>${esc(r.res)}</b>. O Godot importa sozinho ao voltar para ele. <button class="tbtn sm" data-show>Mostrar na pasta</button>`;
+        $('[data-show]', msg).onclick = () => DESK.showItem(r.paths[0]);
+        return;
+      }
+      if (act === 'folder' || act === 'wafile') {
+        let dir = act === 'wafile' ? DESK.join(deskCfg.lib || (await DESK.docsDir()), 'Exportados') : await DESK.pickFolder({ title: 'Salvar os sons em…' });
+        if (!dir) { msg.textContent = 'Nenhuma pasta escolhida.'; return; }
+        const ps = [];
+        for (const f of allF) { const p = DESK.join(dir, f.name); await DESK.writeFile(p, new Uint8Array(await f.arrayBuffer())); ps.push(p); }
+        DESK.showItem(ps[0]);
+        msg.textContent = act === 'wafile' ? 'MP3 salvo. Arraste o arquivo da pasta que abriu para a conversa no WhatsApp (app ou web).' : `${ps.length > 1 ? ps.length + ' arquivos salvos' : 'Salvo'} em ${dir}.`;
+        return;
+      }
       const total = files.length + (tres ? 1 : 0);
       if (act === 'drive') {
         const all2 = [...files, ...(tres ? [tres] : [])];
@@ -499,29 +539,249 @@ async function share(files, msg, okText) {
 async function makeBackup() {
   const [clips, presets, mixes] = await Promise.all([all('clips'), all('presets'), all('mixes')]);
   const toUrl = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
-  const out = { app: 'sfx-studio', version: 2, date: new Date().toISOString(), presets, mixes, clips: [] };
+  const out = { app: 'farelo', version: 3, date: new Date().toISOString(), presets, mixes, clips: [] };
   for (const c of clips) out.clips.push({ ...c, blob: await toUrl(c.blob) });
-  return new File([JSON.stringify(out)], `sfx-studio-backup-${new Date().toISOString().slice(0, 10)}.txt`, { type: 'text/plain' });
+  return new File([JSON.stringify(out)], `farelo-backup-${new Date().toISOString().slice(0, 10)}.txt`, { type: 'text/plain' });
 }
 async function restoreBackup(file) {
   let j;
-  try { j = JSON.parse(await file.text()); } catch { throw new Error('Este arquivo não é um backup do SFX Studio.'); }
-  if (j.app !== 'sfx-studio') throw new Error('Este arquivo não é um backup do SFX Studio.');
+  try { j = JSON.parse(await file.text()); } catch { throw new Error('Este arquivo não é um backup do Farelo.'); }
+  if (j.app !== 'sfx-studio' && j.app !== 'farelo') throw new Error('Este arquivo não é um backup do Farelo.');
   for (const c of j.clips || []) { c.blob = await (await fetch(c.blob)).blob(); await put('clips', c); pcache.delete(c.id); }
   for (const p of j.presets || []) await put('presets', p);
   for (const m of j.mixes || []) await put('mixes', m);
   return { clips: (j.clips || []).length, presets: (j.presets || []).length, mixes: (j.mixes || []).length };
 }
 
+// ---------- programa de Windows: biblioteca no disco, Godot, arquivos ----------
+const deskCfg = { lib: '', godot: '', gsub: 'sfx', browse: '', ...store.get('desk', {}) };
+const saveDesk = () => store.set('desk', deskCfg);
+const EXT_OF = (t = '') => (/wav/.test(t) ? 'wav' : /ogg/.test(t) ? 'ogg' : /mpeg|mp3/.test(t) ? 'mp3' : /mp4|aac|m4a/.test(t) ? 'm4a' : /flac/.test(t) ? 'flac' : 'webm');
+const MIME_OF = (name) => ({ wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', webm: 'audio/webm', opus: 'audio/ogg', mp4: 'video/mp4' }[String(name).split('.').pop().toLowerCase()] || 'application/octet-stream');
+const AUDIO_RE = /\.(wav|mp3|ogg|oga|flac|m4a|aac|webm|opus|mp4)$/i;
+const writtenAudio = new Set();
+const libPath = (...p) => DESK.join(deskCfg.lib, ...p);
+async function mirror(s, o) {
+  if (!deskCfg.lib) return;
+  if (s === 'clips') {
+    const ext = EXT_OF(o.blob?.type), audio = `${o.id}.${ext}`;
+    if (o.blob && !writtenAudio.has(audio)) {
+      if (!(await DESK.exists(libPath('sons', audio)))) await DESK.writeFile(libPath('sons', audio), new Uint8Array(await o.blob.arrayBuffer()));
+      writtenAudio.add(audio);
+    }
+    const { blob, ...meta } = o;
+    await DESK.writeFile(libPath('sons', `${o.id}.json`), JSON.stringify({ ...meta, audioFile: audio, mime: blob?.type || '' }, null, 1));
+  } else if (s === 'mixes') await DESK.writeFile(libPath('mixagens', `${o.id}.json`), JSON.stringify(o, null, 1));
+  else if (s === 'presets') await DESK.writeFile(libPath('presets.json'), JSON.stringify(await all('presets'), null, 1));
+}
+async function unmirror(s, id) {
+  if (!deskCfg.lib) return;
+  if (s === 'clips') { const ls = await DESK.listDir(libPath('sons')).catch(() => []); for (const f of ls) if (f.name.startsWith(id + '.')) await DESK.remove(libPath('sons', f.name)); }
+  else if (s === 'mixes') await DESK.remove(libPath('mixagens', `${id}.json`));
+  else if (s === 'presets') await DESK.writeFile(libPath('presets.json'), JSON.stringify(await all('presets'), null, 1));
+}
+// Lê a pasta da biblioteca e traz para o app o que estiver mais novo no disco
+async function syncFromDisk() {
+  if (!deskCfg.lib || !(await DESK.exists(deskCfg.lib))) return 0;
+  let n = 0;
+  const have = Object.fromEntries((await all('clips')).map((c) => [c.id, c]));
+  for (const f of await DESK.listDir(libPath('sons')).catch(() => [])) {
+    if (!f.name.endsWith('.json')) continue;
+    try {
+      const meta = JSON.parse(await DESK.readFile(libPath('sons', f.name), true));
+      const cur = have[meta.id];
+      if (cur && (cur.updated || 0) >= (meta.updated || 0)) { writtenAudio.add(meta.audioFile); continue; }
+      const bytes = await DESK.readFile(libPath('sons', meta.audioFile));
+      const { audioFile, mime, ...clip } = meta;
+      clip.blob = new Blob([bytes], { type: mime || MIME_OF(audioFile) });
+      await putRaw('clips', clip); pcache.delete(clip.id); writtenAudio.add(audioFile); n++;
+    } catch (e) { console.warn('sync', f.name, e); }
+  }
+  try { for (const p of JSON.parse(await DESK.readFile(libPath('presets.json'), true))) await putRaw('presets', p); } catch {}
+  const mixes = Object.fromEntries((await all('mixes')).map((m) => [m.id, m]));
+  for (const f of await DESK.listDir(libPath('mixagens')).catch(() => [])) {
+    try { const m = JSON.parse(await DESK.readFile(libPath('mixagens', f.name), true)); if (!mixes[m.id] || (mixes[m.id].updated || 0) < (m.updated || 0)) await putRaw('mixes', m); } catch {}
+  }
+  return n;
+}
+// Copia para o disco tudo o que já existe no app (primeira vez ou ao trocar de pasta)
+async function pushAllToDisk() {
+  for (const c of await all('clips')) await mirror('clips', c);
+  for (const m of await all('mixes')) await mirror('mixes', m);
+  await mirror('presets');
+}
+async function importFiles(files, open = false) {
+  let last = null, n = 0;
+  for (const f of files) {
+    const clip = newClip(f.name.replace(/\.[^.]+$/, ''), f);
+    try { const b = await decode(clip); clip.dur = b.duration; clip.thumb = thumbOf(b); }
+    catch { toast(String(f.type).startsWith('video') ? `O vídeo ${f.name} não tem áudio que dê para ler.` : `Não consegui abrir ${f.name}`); continue; }
+    await put('clips', clip); last = clip; n++;
+  }
+  if (n) toast(n > 1 ? `${n} sons importados` : `"${last.name}" importado`);
+  if (open && n === 1) editor(last); else if (n && tab === 'lib' && !document.body.classList.contains('ed-mode')) library();
+  return n;
+}
+async function importPaths(paths, open = false) {
+  const files = [];
+  for (const p of paths) { try { const bytes = await DESK.readFile(p); files.push(new File([bytes], DESK.basename(p), { type: MIME_OF(p) })); } catch { toast(`Não consegui ler ${p}`); } }
+  return importFiles(files, open);
+}
+// Godot: escreve os arquivos dentro do projeto vinculado
+const godotChanged = (c) => c.godot && c.godot.key !== clipKey(c);
+async function godotWrite(files, sub) {
+  if (!deskCfg.godot) throw new Error('Vincule um projeto Godot em Configurações primeiro.');
+  const parts = (sub || '').split(/[\\/]+/).filter(Boolean), dir = DESK.join(deskCfg.godot, ...parts), out = [];
+  for (const f of files) { const p = DESK.join(dir, f.name); await DESK.writeFile(p, new Uint8Array(await f.arrayBuffer())); out.push(p); }
+  return { dir, paths: out, res: `res://${parts.join('/')}${parts.length ? '/' : ''}` };
+}
+async function encodeFor(buf, kind, loop) {
+  const b = await D.prepare(buf, expOpts);
+  return kind === 'mp3' ? D.encodeMp3(b) : kind === 'ogg' ? D.encodeOgg(b) : D.encodeWav(b, { loop: !!loop });
+}
+async function reexportClip(c) {
+  const g = c.godot, kind = g.file.split('.').pop();
+  const blob = await encodeFor(await processed(c), kind, c.edits?.loop);
+  await godotWrite([new File([blob], g.file)], g.sub);
+  c.godot = { ...g, key: clipKey(c), at: Date.now() };
+  await put('clips', c);
+}
+async function linkGodot(msgEl) {
+  const dir = await DESK.pickFolder({ title: 'Escolha a pasta do projeto Godot (onde fica o project.godot)', start: deskCfg.godot || undefined });
+  if (!dir) return false;
+  const root = await DESK.findGodotRoot(dir);
+  deskCfg.godot = root || dir; saveDesk();
+  if (msgEl) msgEl.textContent = root ? `Projeto vinculado: ${root}` : 'Não achei o arquivo project.godot nessa pasta. Vou salvar nela mesmo assim.';
+  return true;
+}
+const dragCache = new Map();
+async function prepDrag(c) {
+  const key = clipKey(c) + expOpts.rate + expOpts.mono + expOpts.lufs;
+  const hit = dragCache.get(c.id);
+  if (hit && hit.key === key) return hit.path;
+  const blob = await encodeFor(await processed(c), 'wav', c.edits?.loop);
+  const path = DESK.join(await DESK.tempDir(), `${safe(c.name)}.wav`);
+  await DESK.writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+  dragCache.set(c.id, { key, path });
+  return path;
+}
+
+// Navegador de arquivos: ouvir pastas de sons com as setas e importar
+const browseBufs = new Map();
+async function browser() {
+  const dir = deskCfg.browse;
+  let ents = [];
+  if (dir) { try { ents = (await DESK.listDir(dir)).filter((e) => e.dir || AUDIO_RE.test(e.name)).sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name, 'pt', { numeric: true })); } catch { ents = []; } }
+  app.innerHTML = `
+    <header class="top"><h1>Arquivos</h1><button class="ibtn" id="setBtn" aria-label="Configurações">${ic('gear')}</button></header>
+    <p class="hint lead">Abra qualquer pasta de sons do computador (inclusive a do seu projeto Godot) e ouça um por um com as setas do teclado. Espaço toca, Enter importa, e dá para arrastar um arquivo direto para o Godot.</p>
+    <div class="row brow"><button class="primary" id="bPick">${ic('library')}Escolher pasta</button>${dir ? `<button id="bUp">${ic('up')}Subir</button><button id="bOpen">Abrir no Explorer</button>` : ''}${deskCfg.godot ? `<button id="bGodot">Projeto Godot</button>` : ''}</div>
+    ${dir ? `<p class="path">${esc(dir)}</p>` : ''}
+    <div class="wavebox gen"><canvas id="bwv"></canvas></div>
+    <p class="hint" id="bInfo">${dir ? (ents.some((e) => !e.dir) ? 'Selecione um arquivo para ouvir.' : 'Nenhum áudio nesta pasta.') : 'Nenhuma pasta aberta.'}</p>
+    <ul class="flist" id="flist" tabindex="0">${ents.map((e, i) => `<li data-i="${i}" class="${e.dir ? 'isdir' : ''}" ${e.dir ? '' : 'draggable="true"'}>
+      ${e.dir ? `<span class="fxi">${ic('library')}</span>` : `<label class="sel"><input type="checkbox" aria-label="Marcar ${esc(e.name)}"></label>`}
+      <span class="tx"><span class="nm">${esc(e.name)}</span><small>${e.dir ? 'pasta' : `${(e.size / 1024).toFixed(0)} KB`}</small></span></li>`).join('')}</ul>
+    ${ents.some((e) => !e.dir) ? `<div class="row"><button id="bImpSel">${ic('download')}Importar marcados</button><button id="bImpAll">Importar todos desta pasta</button></div>` : ''}`;
+  $('#setBtn').onclick = openSettings;
+  const go = (d) => { deskCfg.browse = d; saveDesk(); browser(); };
+  $('#bPick').onclick = async () => { const d = await DESK.pickFolder({ title: 'Escolha uma pasta de sons', start: dir || undefined }); if (d) go(d); };
+  if ($('#bUp')) { $('#bUp').onclick = () => go(DESK.dirname(dir)); $('#bOpen').onclick = () => DESK.openPath(dir); }
+  if ($('#bGodot')) $('#bGodot').onclick = () => go(deskCfg.godot);
+  let cur = -1;
+  const lis = $$('#flist li');
+  const pick = async (i, autoplay = true) => {
+    if (i < 0 || i >= ents.length || !$('#bInfo') || !lis[i]?.isConnected) return;
+    cur = i; lis.forEach((l) => l.classList.toggle('cur', +l.dataset.i === i)); lis[i].scrollIntoView({ block: 'nearest' });
+    const e = ents[i];
+    if (e.dir) { $('#bInfo').textContent = 'Pasta. Enter ou duplo clique para abrir.'; return; }
+    const p = DESK.join(dir, e.name);
+    try {
+      let b = browseBufs.get(p);
+      if (!b) { const bytes = await DESK.readFile(p); b = await D.ctx().decodeAudioData(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); browseBufs.set(p, b); if (browseBufs.size > 40) browseBufs.delete(browseBufs.keys().next().value); }
+      if (cur !== i || !$('#bwv')) return;
+      drawWave($('#bwv'), b, { color: col().accent });
+      $('#bInfo').textContent = `${e.name} · ${fmt(b.duration)} · ${b.numberOfChannels > 1 ? 'estéreo' : 'mono'} · ${b.sampleRate} Hz · pico ${db2(D.peakOf(b))} dB`;
+      if (autoplay) play(b);
+    } catch { if ($('#bInfo')) $('#bInfo').textContent = `Não consegui ler ${e.name}.`; }
+  };
+  lis.forEach((li) => {
+    const i = +li.dataset.i, e = ents[i];
+    li.onclick = (ev) => { if (ev.target.closest('.sel')) return; pick(i); };
+    li.ondblclick = () => (e.dir ? go(DESK.join(dir, e.name)) : importPaths([DESK.join(dir, e.name)], true));
+    if (!e.dir) li.ondragstart = (ev) => { ev.preventDefault(); DESK.startDrag(DESK.join(dir, e.name)); };
+  });
+  const checked = () => lis.filter((l) => $('input', l)?.checked).map((l) => DESK.join(dir, ents[+l.dataset.i].name));
+  if ($('#bImpSel')) {
+    $('#bImpSel').onclick = () => { const c = checked(); if (!c.length) { toast('Marque os arquivos primeiro'); return; } importPaths(c); };
+    $('#bImpAll').onclick = () => importPaths(ents.filter((e) => !e.dir).map((e) => DESK.join(dir, e.name)));
+  }
+  keyHandler = (ev) => {
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); pick(Math.max(0, Math.min(ents.length - 1, cur + (ev.key === 'ArrowDown' ? 1 : -1)))); }
+    else if (ev.key === ' ') { ev.preventDefault(); if (playing) stop(); else if (cur >= 0) pick(cur); }
+    else if (ev.key === 'Enter' && cur >= 0) { const e = ents[cur]; e.dir ? go(DESK.join(dir, e.name)) : importPaths([DESK.join(dir, e.name)], true); }
+    else if (ev.key === 'Backspace' && dir) go(DESK.dirname(dir));
+  };
+  new ResizeObserver(() => cur >= 0 && pick(cur, false)).observe($('#bwv'));
+}
+
+let updText = '';
+function updStatus(st) {
+  const T = { checking: 'Procurando atualização…', none: 'Você está na versão mais nova.', available: `Baixando a versão ${st.v}…`, progress: `Baixando atualização: ${st.p}%`, ready: `Versão ${st.v} pronta.`, error: `Não consegui verificar atualizações (${st.m || 'sem internet?'}).`, dev: 'Versão de teste: atualização automática desligada.' };
+  updText = T[st.s] || '';
+  const m = $('#stUpdMsg'); if (m) m.textContent = updText;
+  if (st.s === 'ready' && !$('#updBar')) {
+    document.body.insertAdjacentHTML('beforeend', `<div id="updBar" role="status"><span>Atualização ${esc(st.v)} pronta.</span><button class="primary" id="updNow">Reiniciar e atualizar</button><button class="ibtn sm" id="updLater" aria-label="Depois">${ic('close')}</button></div>`);
+    $('#updNow').onclick = () => DESK.installUpdate();
+    $('#updLater').onclick = () => $('#updBar').remove();
+  }
+}
+// ---------- atalhos de teclado ----------
+let keyHandler = null;
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t.closest && t.closest('input:not([type=range]):not([type=checkbox]), textarea, select, [contenteditable]')) return;
+  if (document.querySelector('.ovl')) { if (e.key === 'Escape') { const x = document.querySelector('.ovl [data-close], .ovl #rc, .ovl #lc, .ovl #tSkip'); x && x.click(); } return; }
+  if (e.key === '?' || (e.key === '/' && e.shiftKey)) { e.preventDefault(); shortcutsSheet(); return; }
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && document.body.classList.contains('ed-mode') === false) {
+    const map = { F1: 'lib', F2: 'gen', F3: 'mix', F4: 'files' };
+    if (map[e.key] && (map[e.key] !== 'files' || DESK)) { e.preventDefault(); nav(map[e.key]); return; }
+  }
+  keyHandler && keyHandler(e);
+});
+const SHORTCUTS = [
+  ['Geral', [['?', 'Mostrar esta lista'], ['Esc', 'Fechar janela ou gaveta'], ['F1 / F2 / F3 / F4', 'Biblioteca, Gerador, Mixagens, Arquivos'], ['R', 'Gravar (na Biblioteca)'], ['Espaço', 'Tocar / parar']]],
+  ['Editor', [['Espaço', 'Tocar com efeitos / parar'], ['Shift + Espaço', 'Tocar o original'], ['L', 'Liga/desliga o loop'], ['1 2 3 4', 'Cortar, Trecho, Volume, Reparar'], ['Ctrl + Z / Ctrl + Y', 'Desfazer / refazer'], ['Ctrl + A', 'Selecionar tudo (modo Trecho)'], ['Ctrl + C / X / V', 'Copiar, recortar, colar trecho'], ['Delete', 'Apagar trecho selecionado'], ['M', 'Adicionar marcador'], ['+ / - / 0', 'Aproximar, afastar, ver tudo'], ['Roda do mouse', 'Zoom; com Shift, rolar para os lados'], ['E', 'Abrir a aba Exportar'], ['Ctrl + S', 'Salvar no projeto Godot (programa de Windows)'], ['Backspace', 'Voltar para a Biblioteca']]],
+  ['Biblioteca e Arquivos', [['↑ / ↓', 'Escolher som'], ['Espaço', 'Ouvir'], ['Enter', 'Abrir no editor / importar'], ['Ctrl + A', 'Marcar todos']]],
+];
+function shortcutsSheet() {
+  if ($('.ovl')) return;
+  sheet('Atalhos de teclado', SHORTCUTS.map(([g, ks]) => `<h3 class="gh">${g}</h3><dl class="keys">${ks.map(([k, d]) => `<dt>${k.split(' / ').map((x) => x.split(' + ').map((y) => `<kbd>${y}</kbd>`).join(' + ')).join(' / ')}</dt><dd>${d}</dd>`).join('')}</dl>`).join(''), { icon: 'keyboard' });
+}
+
+// ---------- arrastar arquivos para dentro da janela ----------
+let dragDepth = 0;
+window.addEventListener('dragenter', (e) => { if (![...(e.dataTransfer?.types || [])].includes('Files')) return; dragDepth++; document.body.classList.add('dropping'); });
+window.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) document.body.classList.remove('dropping'); });
+window.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault(); });
+window.addEventListener('drop', (e) => {
+  dragDepth = 0; document.body.classList.remove('dropping');
+  const files = [...(e.dataTransfer?.files || [])].filter((f) => AUDIO_RE.test(f.name) || /^(audio|video)\//.test(f.type));
+  if (!files.length) return;
+  e.preventDefault();
+  importFiles(files, files.length === 1);
+});
+
 // ---------- navegação ----------
 let tab = 'lib';
 const tabsEl = $('.tabs');
-tabsEl.innerHTML = [['lib', 'library', 'Biblioteca'], ['gen', 'gen', 'Gerador'], ['mix', 'mix', 'Mixagens']].map(([t, i, l]) => `<button data-t="${t}" aria-current="${t === tab}">${ic(i)}<span>${l}</span></button>`).join('');
+tabsEl.classList.toggle('four', !!DESK);
+tabsEl.innerHTML = [['lib', 'library', 'Biblioteca'], ['gen', 'gen', 'Gerador'], ['mix', 'mix', 'Mixagens'], ...(DESK ? [['files', 'search', 'Arquivos']] : [])].map(([t, i, l]) => `<button data-t="${t}" aria-current="${t === tab}">${ic(i)}<span>${l}</span></button>`).join('');
 function setTab(t) { tab = t; $$('.tabs button').forEach((b) => b.setAttribute('aria-current', b.dataset.t === t)); }
 function nav(t) { stop(); setTab(t); render(); }
 $$('.tabs button').forEach((b) => b.onclick = () => nav(b.dataset.t));
 function screen(mode) { document.body.classList.toggle('ed-mode', mode === 'ed'); }
-function render() { screen('main'); window.scrollTo(0, 0); ({ mix: mixList, gen: generator }[tab] || library)(); }
+function render() { screen('main'); keyHandler = null; window.scrollTo(0, 0); ({ mix: mixList, gen: generator, files: DESK ? browser : null }[tab] || library)(); }
 
 // ---------- biblioteca ----------
 let selected = new Set(), query = '', tagFilter = '';
@@ -536,11 +796,12 @@ async function library() {
   const lastBk = store.get('bk', 0), needBk = clips.length && Date.now() - lastBk > 7 * 864e5;
   const presets = (await all('presets')).sort((a, b) => a.name.localeCompare(b.name));
   app.innerHTML = `
-    <header class="top"><h1>SFX Studio</h1><span class="count">${clips.length} ${clips.length === 1 ? 'som' : 'sons'}</span><button class="ibtn" id="setBtn" aria-label="Configurações">${ic('gear')}</button></header>
-    ${needBk ? `<div class="banner"><span>${lastBk ? 'Seu último backup tem mais de uma semana.' : 'Suas gravações só existem neste celular.'} Faça um backup no Drive.</span><button id="goBk">Backup</button></div>` : ''}
+    <header class="top"><h1>Farelo</h1><span class="count">${clips.length} ${clips.length === 1 ? 'som' : 'sons'}</span><button class="ibtn" id="setBtn" aria-label="Configurações">${ic('gear')}</button></header>
+    ${needBk && !DESK ? `<div class="banner"><span>${lastBk ? 'Seu último backup tem mais de uma semana.' : 'Suas gravações só existem neste celular.'} Faça um backup no Drive.</span><button id="goBk">Backup</button></div>` : ''}
+    ${DESK && clips.some(godotChanged) ? `<div class="banner"><span>${clips.filter(godotChanged).length} som(ns) mudaram desde que foram salvos no projeto Godot.</span><button id="reAll">${ic('export')}Atualizar no projeto</button></div>` : ''}
     <div class="hero">
       <button class="recbig" id="btnRec">${ic('mic')}Gravar</button>
-      <label class="btn ghost">${ic('download')}Importar<input type="file" accept="audio/*,video/*" id="imp" multiple hidden></label>
+      <label class="btn ghost" title="Você também pode arrastar arquivos para a janela">${ic('download')}Importar<input type="file" accept="audio/*,video/*" id="imp" multiple hidden></label>
     </div>
     ${clips.length ? `
     <div class="searchrow"><label class="search">${ic('search')}<input id="q" type="search" placeholder="Buscar" value="${esc(query)}" autocomplete="off" aria-label="Buscar"></label>
@@ -557,6 +818,7 @@ async function library() {
         <div class="fg">
           <label class="sel"><input type="checkbox" ${selected.has(c.id) ? 'checked' : ''} aria-label="Selecionar ${esc(c.name)}"></label>
           <button class="open"><canvas class="th"></canvas><span class="tx"><span class="nm">${esc(c.name)}</span><small>${fmt(clipLen(c))}${n ? ` · ${n} efeito${n > 1 ? 's' : ''}` : ''}${c.edits?.loop ? ' · loop' : ''}${(c.tags || []).length ? ' · ' + c.tags.map(esc).join(', ') : ''}</small></span></button>
+          ${DESK ? `<span class="grip" title="Arraste para o Godot ou para uma pasta">${ic('select')}</span>` : ''}
           <button class="ibtn play" aria-label="Ouvir">${ic('play')}</button>
         </div>
       </li>`;
@@ -586,13 +848,12 @@ async function library() {
 
   $('#setBtn').onclick = openSettings;
   $('#btnRec').onclick = openRecorder;
-  $('#imp').onchange = async (e) => {
-    for (const f of e.target.files) {
-      const clip = newClip(f.name.replace(/\.[^.]+$/, ''), f);
-      try { const b = await decode(clip); clip.dur = b.duration; clip.thumb = thumbOf(b); } catch { toast(f.type.startsWith('video') ? `O vídeo ${f.name} não tem áudio que o navegador consiga ler.` : `Não consegui abrir ${f.name}`); continue; }
-      await put('clips', clip);
-    }
-    library();
+  $('#imp').onchange = (e) => importFiles([...e.target.files]);
+  if ($('#reAll')) $('#reAll').onclick = async (ev) => {
+    ev.currentTarget.disabled = true;
+    const list = clips.filter(godotChanged);
+    for (const [i, c] of list.entries()) { ev.currentTarget.textContent = `Atualizando ${i + 1} de ${list.length}…`; try { await reexportClip(c); } catch (err) { toast(err.message); break; } }
+    toast(`${list.length} som(ns) atualizados no projeto`); library();
   };
   if ($('#goBk')) $('#goBk').onclick = () => { $('#bkBox').open = true; $('#bkBox').scrollIntoView({ behavior: 'smooth' }); };
   if ($('#q')) {
@@ -601,9 +862,25 @@ async function library() {
     $('#selAll').onclick = () => { const allSel = shown.every((c) => selected.has(c.id)); shown.forEach((c) => (allSel ? selected.delete(c.id) : selected.add(c.id))); library(); };
   }
   $$('.chipb[data-tag]').forEach((b) => b.onclick = () => { tagFilter = b.dataset.tag; library(); });
-  const missing = [];
-  $$('.list li').forEach((li) => {
+  const missing = [], lis = $$('.list li');
+  let cur = -1;
+  const curPick = (i) => { cur = Math.max(0, Math.min(lis.length - 1, i)); lis.forEach((l, k) => l.classList.toggle('cur', k === cur)); lis[cur]?.scrollIntoView({ block: 'nearest' }); };
+  keyHandler = (ev) => {
+    const k = ev.key;
+    if ((k === 'r' || k === 'R') && !ev.ctrlKey) { ev.preventDefault(); openRecorder(); }
+    else if (k === 'ArrowDown' || k === 'ArrowUp') { ev.preventDefault(); curPick(cur + (k === 'ArrowDown' ? 1 : -1)); }
+    else if (k === ' ' && lis.length) { ev.preventDefault(); if (playing) stop(); else { if (cur < 0) curPick(0); $('.play', lis[cur]).click(); } }
+    else if (k === 'Enter' && cur >= 0) $('.open', lis[cur]).click();
+    else if ((ev.ctrlKey || ev.metaKey) && k.toLowerCase() === 'a' && $('#selAll')) { ev.preventDefault(); $('#selAll').click(); }
+    else if (k === 'Delete' && cur >= 0) { const b = $('.a-del', lis[cur]); b.click(); if (b.dataset.c) toast('Aperte Delete de novo para apagar'); }
+  };
+  lis.forEach((li) => {
     const c = clips.find((x) => x.id === li.dataset.id), fg = $('.fg', li), cv = $('.th', li);
+    if (DESK) {
+      li.draggable = true;
+      li.addEventListener('mouseenter', () => { prepDrag(c).catch(() => {}); });
+      li.addEventListener('dragstart', (ev) => { ev.preventDefault(); const hit = dragCache.get(c.id); if (hit && hit.key === clipKey(c) + expOpts.rate + expOpts.mono + expOpts.lufs) DESK.startDrag(hit.path); else prepDrag(c).then((p) => DESK.startDrag(p)); });
+    }
     if (c.thumb) requestAnimationFrame(() => drawThumb(cv, c.thumb)); else missing.push([c, cv]);
     $('.open', li).onclick = () => { if (li.dataset.swiped) return; if (li.classList.contains('open-acts')) { li.classList.remove('open-acts'); fg.style.transform = ''; return; } editor(c); };
     $('.sel input', li).onchange = (e) => { e.target.checked ? selected.add(c.id) : selected.delete(c.id); library(); };
@@ -658,7 +935,7 @@ async function library() {
       const base = $('#base').value.trim();
       const list = clips.filter((c) => selected.has(c.id));
       const out = [];
-      for (let i = 0; i < list.length; i++) out.push({ buf: await processed(list[i]), name: base ? `${base}_${pad2(i + 1)}` : list[i].name, loop: list[i].edits?.loop });
+      for (let i = 0; i < list.length; i++) out.push({ buf: await processed(list[i]), name: base ? `${base}_${pad2(i + 1)}` : list[i].name, loop: list[i].edits?.loop, clip: list[i] });
       return out;
     }, { packName: () => $('#base').value.trim() || 'sons' });
   }
@@ -694,7 +971,24 @@ async function openSettings() {
   const est = await (navigator.storage?.estimate?.() || Promise.resolve(null)).catch(() => null);
   const s = sheet('Configurações', `
     <label class="field">Tema<select id="stTheme">${[['dark', 'Escuro'], ['light', 'Claro'], ['system', 'Igual ao celular']].map(([v, l]) => `<option value="${v}" ${settings.theme === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-    <label class="check"><input type="checkbox" id="stVib" ${settings.vib ? 'checked' : ''}> Vibrar ao tocar nos botões</label>
+    ${DESK ? '' : `<label class="check"><input type="checkbox" id="stVib" ${settings.vib ? 'checked' : ''}> Vibrar ao tocar nos botões</label>`}
+    <details class="card" id="stDev"><summary>${ic('mic')}Microfone e saída de som</summary>
+      <label class="field">Microfone<select id="stIn"><option value="">Padrão do sistema</option></select></label>
+      <label class="field">Saída (fone, caixa de som)<select id="stOut"><option value="">Padrão do sistema</option></select></label>
+      <p class="hint" id="stDevHint">Se os nomes não aparecerem, grave uma vez para liberar o microfone e abra de novo.</p>
+    </details>
+    ${DESK ? `<details class="card" open><summary>${ic('library')}Programa de Windows</summary>
+      <div class="kv"><span>Pasta da biblioteca</span><b id="stLib">${esc(deskCfg.lib)}</b></div>
+      <p class="hint">Todos os sons, presets e mixagens ficam salvos aqui como arquivos. Coloque essa pasta dentro do Google Drive para PC ou do OneDrive para ter backup automático.</p>
+      <div class="row"><button id="stLibCh">Trocar pasta</button><button id="stLibOpen">Abrir</button></div>
+      <div class="kv"><span>Projeto Godot</span><b id="stGd">${deskCfg.godot ? esc(deskCfg.godot) : 'nenhum'}</b></div>
+      <div class="row"><button id="stGdCh" class="primary">${deskCfg.godot ? 'Trocar projeto' : 'Escolher projeto'}</button>${deskCfg.godot ? '<button id="stGdOpen">Abrir</button>' : ''}</div>
+      <p class="msg" id="stGdMsg"></p>
+      <div class="kv"><span>Versão</span><b id="stVer">…</b></div>
+      <div class="row"><button id="stUpd">Procurar atualização</button></div>
+      <p class="msg" id="stUpdMsg">${esc(updText || '')}</p>
+    </details>` : ''}
+    <button id="stKeys">${ic('keyboard')}Atalhos de teclado</button>
     <button id="stTour">Ver o tutorial de novo</button>
     <details class="card"><summary>${ic('drive')}Envio direto para o Google Drive</summary>
       <p class="hint">Com isso configurado, aparece o botão "Enviar para o Drive", que manda os arquivos direto para uma pasta, sem passar pelo menu de compartilhar.</p>
@@ -704,7 +998,7 @@ async function openSettings() {
       <p class="msg" id="stDmsg"></p>
       <details><summary>Como conseguir o ID do cliente (uma vez só)</summary>
         <ol class="steps">
-          <li>No navegador, abra console.cloud.google.com e crie um projeto (ex.: "SFX Studio").</li>
+          <li>No navegador, abra console.cloud.google.com e crie um projeto (ex.: "Farelo").</li>
           <li>Em "APIs e serviços" → "Biblioteca", procure "Google Drive API" e ative.</li>
           <li>Em "Tela de permissão OAuth", escolha "Externo", preencha o nome do app e seu e-mail, e em "Usuários de teste" adicione o seu e-mail do Google.</li>
           <li>Em "Credenciais" → "Criar credenciais" → "ID do cliente OAuth", tipo "Aplicativo da Web".</li>
@@ -715,16 +1009,41 @@ async function openSettings() {
       </details>
     </details>
     ${est ? `<p class="hint">Espaço usado pelo app: ${(est.usage / 1048576).toFixed(1)} MB.</p>` : ''}
-    <p class="hint">SFX Studio · versão 7</p>`, { icon: 'gear' });
+    <p class="hint">Farelo · versão ${DESK ? 'Windows' : 'web'} 8</p>`, { icon: 'gear' });
   $('#stTheme', s.body).onchange = (e) => { settings.theme = e.target.value; store.set('settings', settings); applyTheme(); s.close(); render(); };
-  $('#stVib', s.body).onchange = (e) => { settings.vib = e.target.checked; store.set('settings', settings); };
+  if ($('#stVib', s.body)) $('#stVib', s.body).onchange = (e) => { settings.vib = e.target.checked; store.set('settings', settings); };
+  $('#stKeys', s.body).onclick = () => { s.close(); shortcutsSheet(); };
+  (async () => {
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const fill = (sel, kind, cur) => { for (const d of devs.filter((x) => x.kind === kind && x.deviceId && x.deviceId !== 'default')) sel.insertAdjacentHTML('beforeend', `<option value="${esc(d.deviceId)}" ${d.deviceId === cur ? 'selected' : ''}>${esc(d.label || (kind === 'audioinput' ? 'Microfone' : 'Saída') + ' ' + d.deviceId.slice(0, 5))}</option>`); };
+      fill($('#stIn', s.body), 'audioinput', settings.inDev); fill($('#stOut', s.body), 'audiooutput', settings.outDev);
+      if (!D.ctx().setSinkId) { $('#stOut', s.body).disabled = true; $('#stDevHint', s.body).textContent = 'Este navegador não deixa escolher a saída de som.'; }
+    } catch {}
+  })();
+  $('#stIn', s.body).onchange = (e) => { settings.inDev = e.target.value; store.set('settings', settings); toast('Microfone escolhido'); };
+  $('#stOut', s.body).onchange = (e) => { settings.outDev = e.target.value; store.set('settings', settings); applySink(); toast('Saída escolhida'); };
+  if (DESK) {
+    DESK.info().then((i) => { const v = $('#stVer', s.body); if (v) v.textContent = i.version; });
+    $('#stLibCh', s.body).onclick = async () => {
+      const d = await DESK.pickFolder({ title: 'Escolha a pasta da biblioteca', start: deskCfg.lib });
+      if (!d) return;
+      deskCfg.lib = d; saveDesk(); $('#stLib', s.body).textContent = d;
+      const n = await syncFromDisk(); await pushAllToDisk();
+      toast(n ? `${n} som(ns) encontrados na pasta` : 'Biblioteca copiada para a pasta nova');
+    };
+    $('#stLibOpen', s.body).onclick = () => DESK.openPath(deskCfg.lib);
+    $('#stGdCh', s.body).onclick = async () => { if (await linkGodot($('#stGdMsg', s.body))) $('#stGd', s.body).textContent = deskCfg.godot; };
+    if ($('#stGdOpen', s.body)) $('#stGdOpen', s.body).onclick = () => DESK.openPath(deskCfg.godot);
+    $('#stUpd', s.body).onclick = () => { $('#stUpdMsg', s.body).textContent = 'Procurando…'; DESK.checkUpdate(); };
+  }
   $('#stTour', s.body).onclick = () => { s.close(); tour(); };
-  const dsave = () => { settings.drive = { clientId: $('#stCid', s.body).value.trim(), folder: $('#stFolder', s.body).value.trim() || 'SFX Studio' }; store.set('settings', settings); };
+  const dsave = () => { settings.drive = { clientId: $('#stCid', s.body).value.trim(), folder: $('#stFolder', s.body).value.trim() || 'Farelo' }; store.set('settings', settings); };
   $('#stDsave', s.body).onclick = () => { dsave(); $('#stDmsg', s.body).textContent = settings.drive.clientId ? 'Salvo. O botão do Drive aparece na exportação e no backup.' : 'Removido.'; };
   $('#stDtest', s.body).onclick = async () => {
     dsave();
     const m = $('#stDmsg', s.body);
-    try { m.textContent = 'Abrindo o login do Google…'; await DR.upload([new File(['SFX Studio conectado.'], 'teste-sfx-studio.txt', { type: 'text/plain' })], settings.drive); m.textContent = `Funcionou! Um arquivo de teste foi criado na pasta "${settings.drive.folder}".`; }
+    try { m.textContent = 'Abrindo o login do Google…'; await DR.upload([new File(['Farelo conectado.'], 'teste-farelo.txt', { type: 'text/plain' })], settings.drive); m.textContent = `Funcionou! Um arquivo de teste foi criado na pasta "${settings.drive.folder}".`; }
     catch (e) { m.textContent = e.message; }
   };
 }
@@ -753,7 +1072,11 @@ function tour() {
 }
 
 // ---------- gravador ----------
-const getMic = (ns) => navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: ns, autoGainControl: false } });
+async function getMic(ns) {
+  const base = { echoCancellation: false, noiseSuppression: ns, autoGainControl: false };
+  if (settings.inDev) { try { return await navigator.mediaDevices.getUserMedia({ audio: { ...base, deviceId: { exact: settings.inDev } } }); } catch {} }
+  return navigator.mediaDevices.getUserMedia({ audio: base });
+}
 const micError = (e) => (e.name === 'NotAllowedError' ? 'Microfone bloqueado. Toque no ícone ao lado do endereço do site → Permissões → Microfone → Permitir, e tente de novo.' : 'Não consegui acessar o microfone: ' + e.message);
 function meterLoop(an, ov, isRec, onPeak) {
   const d = new Float32Array(an.fftSize), cv = $('.rwv', ov);
@@ -907,6 +1230,7 @@ function genRetro(el) {
     savedMsg($('#gInfo'), await saveGenClip(genBuf, `${G.KINDS[genKind][0]} ${pad2(n)}`, { clip: { gen: clone(gen) } }));
   };
   new ResizeObserver(() => genBuf && $('#gwv') && drawWave($('#gwv'), genBuf, { color: col().accent })).observe($('#gwv'));
+  keyHandler = (ev) => { if (ev.key === ' ') { ev.preventDefault(); if (playing) stop(); else $('#gPlay').click(); } else if (ev.key === 'Enter') $('#gMut').click(); };
   regen(false);
 }
 // tela genérica para geradores assíncronos (ambiente, interface, passos)
@@ -1074,6 +1398,7 @@ async function editor(clip, opt = {}) {
       </div>
       <div class="ctx" id="ctx"></div>
       <div class="transport">
+        <span class="clock" id="clock">0:00.000</span>
         <button id="pO">${ic('play')}Original</button>
         <button id="pF" class="primary">${ic('play')}Com efeitos</button>
         <button id="pL" class="ibtn" aria-label="Repetir em loop" aria-pressed="${loopOn}">${ic('loop')}</button>
@@ -1082,6 +1407,7 @@ async function editor(clip, opt = {}) {
       <div class="outbox"><canvas id="wo"></canvas><span id="fxState" class="hint">Com o loop ligado, os ajustes tocam na hora.</span></div>
     </div>
     <div class="edpanel" id="panel"></div>
+    <aside class="edlib" id="edlib"></aside>
     <nav class="edtabs">${[['edit', 'edit', 'Editar'], ['fx', 'fx', 'Efeitos'], ['tools', 'tools', 'Ferramentas'], ['export', 'export', 'Exportar']].map(([t, i, l]) => `<button data-p="${t}" aria-current="${t === edTab}">${ic(i)}<span>${l}</span>${t === 'fx' && nfx() ? `<em>${nfx()}</em>` : ''}</button>`).join('')}</nav>
   </div>`;
 
@@ -1406,7 +1732,7 @@ async function editor(clip, opt = {}) {
       </details>
       ${clip.gen ? `<button class="wide" id="toGen">${ic('gen')}Abrir no Gerador</button>` : ''}
       <button class="wide" id="dup">${ic('dup')}Duplicar som</button>`,
-    export: () => `${exportPanel('eexp', { godot: false })}<button class="ghost danger wide" id="delC">${ic('trash')}Apagar som</button>`,
+    export: () => `${DESK && clip.godot ? `<div class="banner sm ${godotChanged(clip) ? '' : 'ok'}"><span>No projeto Godot: <b>res://${esc(clip.godot.sub ? clip.godot.sub + '/' : '')}${esc(clip.godot.file)}</b>${godotChanged(clip) ? ' · mudou desde a última vez' : ' · em dia'}</span><button class="tbtn sm primary" id="reexp">${ic('export')}Atualizar</button></div>` : ''}${exportPanel('eexp', { godot: false })}<button class="ghost danger wide" id="delC">${ic('trash')}Apagar som</button>`,
   };
   const derived = (name, edits, chain) => ({ ...newClip(name, clip.blob), dur, tags: [...clip.tags], edits, chain });
   const goLib = (ids, msgEl, text) => {
@@ -1504,7 +1830,8 @@ async function editor(clip, opt = {}) {
       if ($('#toGen')) $('#toGen').onclick = () => { gen = clone(clip.gen); setTab('gen'); render(); };
       $('#dup').onclick = async () => { const c = { ...clone({ ...clip, blob: null }), id: uid(), name: clip.name + ' (cópia)', created: Date.now(), blob: clip.blob }; await put('clips', c); toast('Som duplicado'); editor(c); };
     } else if (p === 'export') {
-      bindExport($('#eexp'), async () => [{ buf: await processed(clip), name: clip.name, loop: e.loop }]);
+      bindExport($('#eexp'), async () => [{ buf: await processed(clip), name: clip.name, loop: e.loop, clip }]);
+      if ($('#reexp')) $('#reexp').onclick = async (ev) => { ev.currentTarget.disabled = true; try { await reexportClip(clip); toast(`Atualizado no projeto: ${clip.godot.sub ? clip.godot.sub + '/' : ''}${clip.godot.file}`); showPanel('export'); } catch (err) { toast(err.message); ev.currentTarget.disabled = false; } };
       $('#delC').onclick = async (ev) => {
         const b = ev.currentTarget;
         if (!b.dataset.c) { b.dataset.c = 1; b.innerHTML = `${ic('trash')}Toque de novo para apagar`; return; }
@@ -1517,6 +1844,62 @@ async function editor(clip, opt = {}) {
   };
   $$('.edtabs button').forEach((b) => b.onclick = () => showPanel(b.dataset.p));
   showPanel(edTab);
+
+  // ----- lista lateral (telas largas) -----
+  all('clips').then((cs) => {
+    const el = $('#edlib'); if (!el) return;
+    cs.sort(SORTS[store.get('sort', 'recent')]?.[1] || SORTS.recent[1]);
+    el.innerHTML = `<h3 class="gh">Biblioteca</h3><ul>${cs.map((c) => `<li><button data-id="${c.id}" class="${c.id === clip.id ? 'is' : ''}"><canvas class="th"></canvas><span>${esc(c.name)}</span></button></li>`).join('')}</ul>`;
+    $$('button', el).forEach((b) => { const c = cs.find((x) => x.id === b.dataset.id); if (c?.thumb) requestAnimationFrame(() => drawThumb($('.th', b), c.thumb)); b.onclick = () => { if (c.id !== clip.id) { if (commitT) commitNow(); editor(c); } }; });
+    $('button.is', el)?.scrollIntoView({ block: 'center' });
+  });
+
+  // ----- relógio, roda do mouse e cursor -----
+  const fmtClock = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(3).padStart(6, '0')}`;
+  const tickClock = () => { const c = $('#clock'); if (!c) return; const p = playPos(); c.textContent = fmtClock(p ?? (sel ? sel.a : cur ?? e.start)); c.classList.toggle('on', p != null); requestAnimationFrame(tickClock); };
+  tickClock();
+  wv.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const s = V.v1 - V.v0;
+    if (ev.shiftKey || Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) { const d = (ev.shiftKey ? ev.deltaY : ev.deltaX) / wv.clientWidth * s; V.v0 += d; V.v1 += d; clampV(); redraw(); return; }
+    const t = xToT(ev.clientX), f = Math.exp(ev.deltaY * 0.0015), ns = Math.max(minSpan, Math.min(dur, s * f)), r = (t - V.v0) / s;
+    V.v0 = t - r * ns; V.v1 = V.v0 + ns; clampV(); redraw();
+  }, { passive: false });
+  wv.addEventListener('mousemove', (ev) => {
+    if (g) return;
+    const x = ev.clientX - wv.getBoundingClientRect().left;
+    let cs = 'pointer';
+    if (mode === 'trim') cs = Math.min(Math.abs(x - tToX(e.start)), Math.abs(x - tToX(e.end))) < 30 ? 'ew-resize' : 'pointer';
+    else if (mode === 'sel') cs = sel && Math.min(Math.abs(x - tToX(sel.a)), Math.abs(x - tToX(sel.b))) < 24 ? 'ew-resize' : 'text';
+    else if (mode === 'fix') cs = 'crosshair';
+    else if (mode === 'env') cs = 'copy';
+    wv.style.cursor = cs;
+  });
+
+  // ----- atalhos do editor -----
+  keyHandler = (ev) => {
+    const k = ev.key, ctrl = ev.ctrlKey || ev.metaKey, lk = k.toLowerCase();
+    const act = (id) => { const b = $(id); if (b && !b.disabled) b.click(); };
+    if (k === ' ') { ev.preventDefault(); if (playing) { stop(); redraw(); } else act(ev.shiftKey ? '#pO' : '#pF'); }
+    else if (ctrl && lk === 'z' && !ev.shiftKey) { ev.preventDefault(); act('#undo'); }
+    else if (ctrl && (lk === 'y' || (lk === 'z' && ev.shiftKey))) { ev.preventDefault(); act('#redo'); }
+    else if (ctrl && lk === 's') { ev.preventDefault(); if (DESK) { showPanel('export'); setTimeout(() => act('#eexp [data-act=godot]'), 30); } else showPanel('export'); }
+    else if (ctrl && lk === 'a') { ev.preventDefault(); setMode('sel'); sel = { a: 0, b: dur }; renderCtx(); redraw(); }
+    else if (ctrl && lk === 'c') { if (mode === 'sel' && sel) { ev.preventDefault(); act('#aCopy'); } }
+    else if (ctrl && lk === 'x') { if (mode === 'sel' && sel) { ev.preventDefault(); act('#aCut'); } }
+    else if (ctrl && lk === 'v') { if (mode === 'sel') { ev.preventDefault(); act('#aPaste'); } }
+    else if (ctrl) return;
+    else if (k === 'Delete') { if (mode === 'sel' && sel) { ev.preventDefault(); act('#aDel'); } else if (mode === 'env' && envSel >= 0) act('#envDel'); else if (mode === 'fix' && rect) act('#fixGo'); }
+    else if (k === 'Escape') { sel = null; rect = null; envSel = -1; renderCtx(); redraw(); }
+    else if (['1', '2', '3', '4'].includes(k)) setMode(['trim', 'sel', 'env', 'fix'][+k - 1]);
+    else if (lk === 'l') act('#pL');
+    else if (lk === 'm') act('#mkAdd');
+    else if (k === '+' || k === '=') act('#zIn');
+    else if (k === '-') act('#zOut');
+    else if (k === '0') act('#zAll');
+    else if (lk === 'e') showPanel('export');
+    else if (k === 'Backspace') { ev.preventDefault(); act('#back'); }
+  };
 }
 
 // ---------- mixagens ----------
@@ -1805,6 +2188,7 @@ async function mixEditor(mix) {
     cancelAnimationFrame(raf); anim();
   };
   $('#ms').onclick = () => { stop(); drawTL(); };
+  keyHandler = (ev) => { if (ev.key === ' ') { ev.preventDefault(); if (playing) { stop(); drawTL(); } else $('#mp').click(); } else if (ev.key === 'Backspace') { ev.preventDefault(); $('#back').click(); } };
   bindExport($('#mexp'), async () => { const b = await master(); return b ? [{ buf: b, name: mix.name }] : []; });
   $('#toClip').onclick = async () => {
     const b = await master();
@@ -1822,5 +2206,18 @@ async function mixEditor(mix) {
 }
 
 applyTheme();
-render();
+(async () => {
+  if (DESK) {
+    try {
+      if (!deskCfg.lib) { deskCfg.lib = DESK.join(await DESK.docsDir(), 'Farelo'); saveDesk(); }
+      const fresh = !(await DESK.exists(deskCfg.lib));
+      await syncFromDisk();
+      if (fresh) pushAllToDisk().catch(() => {});
+      DESK.onOpenFiles((ps) => importPaths(ps, true));
+      DESK.onUpdate(updStatus);
+    } catch (e) { console.warn('início', e); }
+  }
+  render();
+  if (DESK) { const pend = await DESK.pendingFiles().catch(() => []); if (pend.length) importPaths(pend, true); }
+})();
 if (!store.get('tour', 0)) setTimeout(tour, 400);

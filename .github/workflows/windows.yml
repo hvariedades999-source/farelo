@@ -1,0 +1,62 @@
+name: Programa Windows
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['README.md', 'robots.txt']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: windows
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Instalar dependências
+        run: npm install --no-audit --no-fund
+      - name: Copiar o app
+        run: node prepare.js
+      - name: Definir versão
+        shell: bash
+        run: |
+          V="1.0.${{ github.run_number }}"
+          npm pkg set version=$V
+          echo "VER=$V" >> $GITHUB_ENV
+      - name: Montar instalador
+        run: npx electron-builder --win nsis --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Instalar em silêncio
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist -Filter "Farelo-Setup-*.exe" | Select-Object -First 1
+          Start-Process $exe.FullName -ArgumentList '/S' -Wait
+          $app = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter "Farelo.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $app) { throw "Farelo.exe não foi instalado" }
+          "FARELO_EXE=$($app.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Instalado em $($app.FullName)"
+      - name: Testar o programa instalado
+        run: node test/e2e.js
+      - name: Guardar capturas e resultados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testes-${{ github.run_number }}
+          path: desktop/test-results
+      - name: Publicar versão
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VER" "dist/Farelo-Setup-$VER.exe" "dist/Farelo-Setup-$VER.exe.blockmap" dist/latest.yml \
+            --title "Farelo $VER" --notes "Instalador do Farelo para Windows. Baixe o arquivo Farelo-Setup-$VER.exe e abra." -R "${{ github.repository }}"
